@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Génération de 500 MB de données réalistes pour Elasticsearch
-Générateur d'événements de sécurité pour SIEM/SOC testing
+Utilise les vraies données de FusionAI, Assets CMDB et Users AD
 """
 
 import json
@@ -18,258 +18,312 @@ TARGET_SIZE_BYTES = TARGET_SIZE_MB * 1024 * 1024
 BATCH_SIZE = 100000  # Events par batch
 OUTPUT_PREFIX = "/home/debian/events_es_batch_"
 
-# Connexion à la base de données
-DB_PATH = '/tmp/DATABASE_FusionAI.db'
-if not os.path.exists(DB_PATH):
-    DB_PATH = '/home/debian/DATABASE_FusionAI.db'
+print("="*80)
+print("🚀 GÉNÉRATEUR DE DONNÉES ELASTICSEARCH - FUSIONAI")
+print("="*80)
+print()
 
+# Connexion à la base de données
+DB_PATH = '/home/debian/DATABASE_FusionAI.db'
+if not os.path.exists(DB_PATH):
+    DB_PATH = '/tmp/DATABASE_FusionAI.db'
+
+print("[+] Connexion à la base de données FusionAI...")
 conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 
-# Charger les données
-print("[+] Chargement des données de référence...")
+# Charger les données RÉELLES de la BDD
+print("[+] Chargement des données RÉELLES depuis la BDD...")
 
-# IPs depuis la BDD
-cursor.execute("SELECT DISTINCT src_ip FROM alerts WHERE src_ip IS NOT NULL")
+# IPs sources RÉELLES
+cursor.execute("SELECT DISTINCT src_ip FROM alerts WHERE src_ip IS NOT NULL AND src_ip != ''")
 source_ips = [row[0] for row in cursor.fetchall() if row[0]]
-cursor.execute("SELECT DISTINCT dest_ip FROM alerts WHERE dest_ip IS NOT NULL")
+
+# IPs destinations RÉELLES
+cursor.execute("SELECT DISTINCT dest_ip FROM alerts WHERE dest_ip IS NOT NULL AND dest_ip != ''")
 dest_ips = [row[0] for row in cursor.fetchall() if row[0]]
 
-# Users - vérifier si le fichier existe
+# Signatures d'attaques RÉELLES
+cursor.execute("SELECT DISTINCT signature FROM alerts WHERE signature IS NOT NULL AND signature != ''")
+signatures_real = [row[0] for row in cursor.fetchall()]
+
+# Catégories RÉELLES avec leur distribution
+cursor.execute("SELECT category, COUNT(*) as cnt FROM alerts WHERE category IS NOT NULL GROUP BY category")
+categories_distribution = cursor.fetchall()
+total_cats = sum([cnt for _, cnt in categories_distribution])
+categories_weighted = []
+for cat, cnt in categories_distribution:
+    weight = cnt / total_cats
+    categories_weighted.append((cat, weight))
+
+# Sévérités RÉELLES avec distribution
+cursor.execute("SELECT severity, COUNT(*) as cnt FROM alerts WHERE severity IS NOT NULL GROUP BY severity")
+severity_distribution = cursor.fetchall()
+total_sev = sum([cnt for _, cnt in severity_distribution])
+severity_weighted = []
+for sev, cnt in severity_distribution:
+    weight = cnt / total_sev
+    severity_weighted.append((str(sev), weight))
+
+# Ports réels
+cursor.execute("SELECT DISTINCT src_port FROM alerts WHERE src_port IS NOT NULL AND src_port > 0 LIMIT 100")
+real_src_ports = [row[0] for row in cursor.fetchall()]
+
+cursor.execute("SELECT DISTINCT dest_port FROM alerts WHERE dest_port IS NOT NULL AND dest_port > 0 LIMIT 100")
+real_dest_ports = [row[0] for row in cursor.fetchall()]
+
+# Protocoles réels
+cursor.execute("SELECT DISTINCT protocols FROM alerts WHERE protocols IS NOT NULL AND protocols != ''")
+real_protocols = [row[0] for row in cursor.fetchall() if row[0]]
+
+print(f"    ✓ {len(source_ips)} IPs sources RÉELLES")
+print(f"    ✓ {len(dest_ips)} IPs destinations RÉELLES")
+print(f"    ✓ {len(signatures_real)} signatures RÉELLES")
+print(f"    ✓ {len(categories_weighted)} catégories RÉELLES")
+print(f"    ✓ Distribution sévérité RÉELLE")
+
+# Charger les utilisateurs AD RÉELS
+print("[+] Chargement des utilisateurs AD...")
 ad_users = []
 ad_users_file = '/home/debian/ad_users.csv'
 if os.path.exists(ad_users_file):
-    with open(ad_users_file, 'r') as f:
+    with open(ad_users_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         ad_users = [row for row in reader]
+    print(f"    ✓ {len(ad_users)} utilisateurs AD RÉELS")
 else:
-    # Créer des utilisateurs par défaut
-    ad_users = [
-        {'Username': f'user{i}', 'Department': random.choice(['IT', 'Finance', 'HR', 'Sales']),
-         'Display_Name': f'User {i}'}
-        for i in range(1, 101)
-    ]
+    print("    ⚠ Fichier ad_users.csv non trouvé, utilisation de données par défaut")
+    ad_users = [{'Username': f'user{i}', 'Department': 'IT', 'Display_Name': f'User {i}'}
+                for i in range(1, 101)]
 
-# Assets - vérifier si le fichier existe
+# Charger les assets CMDB RÉELS
+print("[+] Chargement des assets CMDB...")
 assets = []
 assets_file = '/home/debian/cmdb_assets.csv'
 if os.path.exists(assets_file):
-    with open(assets_file, 'r') as f:
+    with open(assets_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         assets = [row for row in reader]
+    print(f"    ✓ {len(assets)} assets CMDB RÉELS")
 else:
-    # Créer des assets par défaut
+    print("    ⚠ Fichier cmdb_assets.csv non trouvé, utilisation de données par défaut")
     assets = [
-        {
-            'Hostname': f'WKS-{i:03d}',
-            'Asset_Type': random.choice(['Workstation', 'Server', 'Laptop']),
-            'Criticality': random.choice(['Low', 'Medium', 'High', 'Critical']),
-            'Location': random.choice(['Building A', 'Building B', 'Remote'])
-        }
+        {'Hostname': f'WKS-{i:03d}', 'Asset_Type': 'Workstation',
+         'Criticality': 'Medium', 'Location': 'Office', 'IP_Address': f'10.0.1.{i}'}
         for i in range(1, 101)
     ]
 
-# Signatures d'attaques depuis la BDD
-cursor.execute("SELECT DISTINCT signature FROM alerts WHERE signature IS NOT NULL")
-signatures = [row[0] for row in cursor.fetchall()]
-
-print(f"    {len(source_ips)} source IPs")
-print(f"    {len(dest_ips)} destination IPs")
-print(f"    {len(ad_users)} utilisateurs AD")
-print(f"    {len(assets)} assets CMDB")
-print(f"    {len(signatures)} signatures d'attaque")
 print()
 
-# Patterns d'attaques
-attack_patterns = [
-    {
-        "name": "SQL Injection",
-        "severity": "CRITICAL",
-        "signatures": ["SQL Injection Attempt", "Malicious SQL Query", "SQL Syntax Error"],
-        "techniques": ["T1190", "T1189"],
-        "tactic": "Initial Access",
-        "urls": [
-            "/admin/login.php?user=admin' OR '1'='1",
-            "/search.asp?q=1' UNION SELECT password FROM users--",
-            "/product.jsp?id=1; DROP TABLE customers--"
-        ]
-    },
-    {
-        "name": "XSS Attack",
-        "severity": "HIGH",
-        "signatures": ["Cross-Site Scripting", "Malicious JavaScript Injection"],
-        "techniques": ["T1189", "T1203"],
-        "tactic": "Initial Access",
-        "urls": [
-            "/search?q=<script>alert('XSS')</script>",
-            "/comment.php?text=<img src=x onerror=alert(1)>",
-            "/profile?name=<script>document.cookie</script>"
-        ]
-    },
-    {
-        "name": "Lateral Movement",
-        "severity": "CRITICAL",
-        "signatures": ["SMB Lateral Movement", "RDP Brute Force", "Pass-the-Hash"],
-        "techniques": ["T1021", "T1550"],
-        "tactic": "Lateral Movement",
-        "ports": [445, 3389, 135]
-    },
-    {
-        "name": "Data Exfiltration",
-        "severity": "CRITICAL",
-        "signatures": ["DNS Exfiltration", "Large Data Transfer", "Suspicious FTP Upload"],
-        "techniques": ["T1048", "T1041"],
-        "tactic": "Exfiltration",
-        "protocols": ["DNS", "FTP", "HTTPS"]
-    },
-    {
-        "name": "Reconnaissance",
-        "severity": "MEDIUM",
-        "signatures": ["Port Scan Detected", "Network Enumeration", "LDAP Query"],
-        "techniques": ["T1046", "T1087"],
-        "tactic": "Discovery",
-        "ports": [22, 80, 443, 3389, 445, 8080]
-    }
-]
+# Créer un mapping IP -> Asset
+ip_to_asset = {}
+for asset in assets:
+    if 'IP_Address' in asset and asset['IP_Address']:
+        ip_to_asset[asset['IP_Address']] = asset
 
-def generate_event(timestamp, event_type="security"):
-    """Génère un événement réaliste pour Elasticsearch"""
+# Période temporelle (étendre de 13 jours à 30 jours)
+print("[+] Configuration temporelle:")
+end_time = datetime.now()
+start_time = end_time - timedelta(days=30)
+print(f"    ✓ Période: {start_time.date()} à {end_time.date()}")
+print()
 
-    pattern = random.choice(attack_patterns)
+# Fonction de sélection pondérée
+def weighted_choice(choices_weights):
+    """Sélectionne un élément selon une distribution pondérée"""
+    choices, weights = zip(*choices_weights)
+    total = sum(weights)
+    r = random.uniform(0, total)
+    upto = 0
+    for choice, weight in zip(choices, weights):
+        if upto + weight >= r:
+            return choice
+        upto += weight
+    return choices[-1]
+
+def generate_event(timestamp):
+    """Génère un événement réaliste basé sur les VRAIES données FusionAI"""
+
+    # Utiliser les distributions RÉELLES
+    category = weighted_choice(categories_weighted)
+    severity = weighted_choice(severity_weighted)
+    signature = random.choice(signatures_real)
+
+    # IPs RÉELLES
     src_ip = random.choice(source_ips)
     dst_ip = random.choice(dest_ips)
-    user = random.choice(ad_users)
-    asset = random.choice(assets)
 
-    # Timestamp au format ISO 8601 pour Elasticsearch
+    # Trouver l'asset correspondant à l'IP destination
+    asset = ip_to_asset.get(dst_ip)
+    if not asset:
+        asset = random.choice(assets)
+
+    # User aléatoire
+    user = random.choice(ad_users)
+
+    # Ports réels
+    src_port = random.choice(real_src_ports) if real_src_ports else random.randint(49152, 65535)
+    dest_port = random.choice(real_dest_ports) if real_dest_ports else random.choice([80, 443, 445, 3389, 22])
+
+    # Protocole réel
+    protocol = random.choice(real_protocols) if real_protocols else "TCP"
+
+    # Timestamp ISO 8601
     dt = datetime.fromtimestamp(timestamp)
 
+    # Mapper sévérité numérique vers texte
+    severity_map = {
+        "1": "low",
+        "2": "medium",
+        "3": "high",
+        "4": "critical"
+    }
+    severity_text = severity_map.get(str(severity), "medium")
+
+    # Mapper catégorie vers technique MITRE (approximatif)
+    mitre_map = {
+        "malcore": ("T1059", "Execution"),
+        "sigflow_alert": ("T1071", "Command and Control"),
+        "dga_detect": ("T1568", "Command and Control"),
+        "malicious_powershell_detect": ("T1059.001", "Execution"),
+        "shellcode_detect": ("T1055", "Defense Evasion"),
+        "retrohunt": ("T1087", "Discovery")
+    }
+
+    mitre_technique, mitre_tactic = mitre_map.get(category, ("T1071", "Unknown"))
+
+    # Construire l'événement au format ECS
     event = {
         "@timestamp": dt.isoformat(),
+
+        # Event metadata
         "event": {
-            "category": event_type,
-            "type": "security_event",
+            "category": "security",
+            "type": "alert",
             "kind": "alert",
-            "severity": pattern["severity"].lower(),
+            "severity": severity_text,
             "action": random.choice(["allowed", "blocked", "logged"]),
-            "outcome": random.choice(["success", "failure", "unknown"])
+            "outcome": random.choice(["success", "failure", "unknown"]),
+            "module": category,
+            "dataset": "fusionai.alerts"
         },
 
         # Network data
         "source": {
             "ip": src_ip,
-            "port": random.randint(49152, 65535),
-            "bytes": random.randint(100, 10000)
+            "port": src_port,
+            "bytes": random.randint(100, 50000)
         },
         "destination": {
             "ip": dst_ip,
-            "port": random.choice(pattern.get("ports", [80, 443, 445])),
-            "bytes": random.randint(500, 50000)
+            "port": dest_port,
+            "bytes": random.randint(500, 100000)
         },
         "network": {
-            "protocol": random.choice(["tcp", "udp", "icmp"]),
-            "bytes": random.randint(600, 60000),
+            "protocol": protocol.lower() if protocol else "tcp",
+            "bytes": random.randint(600, 150000),
             "direction": random.choice(["inbound", "outbound", "internal"])
         },
 
-        # User & Host (ECS format)
+        # User info
         "user": {
-            "name": user['Username'],
-            "domain": "CORP",
-            "department": user.get('Department', 'Unknown')
-        },
-        "host": {
-            "name": asset['Hostname'],
-            "type": asset.get('Asset_Type', 'Unknown'),
-            "risk_level": asset.get('Criticality', 'Medium').lower()
+            "name": user.get('Username', 'unknown'),
+            "domain": "fusionai.local",
+            "email": user.get('Email', ''),
+            "department": user.get('Department', 'Unknown'),
+            "full_name": user.get('Display_Name', '')
         },
 
-        # Threat intelligence
+        # Host/Asset info
+        "host": {
+            "name": asset.get('Hostname', 'unknown'),
+            "hostname": asset.get('Hostname', 'unknown'),
+            "type": asset.get('Asset_Type', 'Unknown'),
+            "ip": [dst_ip],
+            "mac": [asset.get('MAC_Address', '')] if asset.get('MAC_Address') else [],
+            "os": {
+                "name": asset.get('OS', 'Unknown'),
+                "platform": "linux" if "Linux" in asset.get('OS', '') or "Ubuntu" in asset.get('OS', '') else "windows"
+            },
+            "risk": {
+                "static_level": asset.get('Criticality', 'Medium').lower()
+            }
+        },
+
+        # Threat intel - MITRE ATT&CK
         "threat": {
             "framework": "MITRE ATT&CK",
             "technique": {
-                "id": random.choice(pattern["techniques"]),
-                "name": pattern["name"]
+                "id": [mitre_technique],
+                "name": [category]
             },
             "tactic": {
-                "name": pattern["tactic"]
+                "name": [mitre_tactic]
             }
         },
 
-        # Attack data
-        "security": {
-            "signature": random.choice(pattern["signatures"]),
-            "category": pattern["name"],
-            "severity": pattern["severity"]
+        # Alert/Security data
+        "rule": {
+            "name": signature,
+            "category": category,
+            "id": str(random.randint(1000, 9999))
         },
 
-        # Metadata
-        "tags": [event_type, pattern["severity"].lower(), "generated"],
+        # FusionAI specific fields
+        "fusionai": {
+            "signature": signature,
+            "category": category,
+            "severity": severity,
+            "asset_owner": asset.get('Owner', ''),
+            "asset_location": asset.get('Location', ''),
+            "asset_department": asset.get('Department', '')
+        },
+
+        # Tags
+        "tags": [
+            category,
+            severity_text,
+            "fusionai",
+            asset.get('Location', 'unknown').lower().replace(' ', '_')
+        ],
+
+        # Labels
         "labels": {
-            "env": "test",
-            "source": "fusionai_generator"
+            "env": "production",
+            "source": "fusionai_generator",
+            "data_source": "real_fusion_ai"
         }
     }
 
-    # Ajouter des champs spécifiques selon le type d'attaque
-    if pattern["name"] in ["SQL Injection", "XSS Attack"]:
-        event["url"] = {
-            "original": random.choice(pattern["urls"]),
-            "path": random.choice(pattern["urls"]).split('?')[0]
-        }
-        event["http"] = {
-            "request": {
-                "method": random.choice(["GET", "POST"]),
-                "bytes": random.randint(200, 5000)
-            },
-            "response": {
-                "status_code": random.choice([200, 403, 500, 401]),
-                "bytes": random.randint(500, 50000)
-            }
-        }
-        event["user_agent"] = {
-            "original": random.choice([
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "sqlmap/1.4.7",
-                "python-requests/2.25.1"
-            ])
-        }
-
-    if pattern["name"] == "Lateral Movement":
+    # Ajouter des champs spécifiques selon la catégorie
+    if "powershell" in category.lower():
         event["process"] = {
-            "name": random.choice(["mstsc.exe", "net.exe", "powershell.exe"]),
-            "executable": random.choice([
-                "C:\\Windows\\System32\\mstsc.exe",
-                "C:\\Windows\\System32\\net.exe",
-                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
-            ]),
-            "command_line": random.choice([
-                "mstsc.exe /v:10.0.1.50",
-                "net use \\\\server\\share",
-                "powershell.exe -enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAA="
-            ])
-        }
-        event["process"]["parent"] = {
-            "name": "explorer.exe"
+            "name": "powershell.exe",
+            "executable": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "command_line": "powershell.exe -enc " + "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=", k=50))
         }
 
-    if pattern["name"] == "Data Exfiltration":
+    if "dga" in category.lower():
+        # DGA domain
+        domain_length = random.randint(10, 20)
+        dga_domain = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=domain_length)) + ".com"
         event["dns"] = {
             "question": {
-                "name": f"{random.randbytes(16).hex()}.malicious-domain.com",
-                "type": "TXT"
+                "name": dga_domain,
+                "type": "A"
             }
         }
-        event["file"] = {
-            "size": random.randint(1000000, 100000000),
-            "name": random.choice(["data.zip", "export.csv", "backup.tar.gz"])
-        }
+
+    if "scan" in signature.lower() or "port_scan" in category.lower():
+        event["fusionai"]["scan_type"] = random.choice(["TCP SYN", "TCP ACK", "UDP", "XMAS"])
+        event["fusionai"]["ports_scanned"] = random.randint(50, 5000)
 
     return event
 
 # Génération des événements
-print(f"[+] Génération de {TARGET_SIZE_MB} MB d'événements...")
-print(f"    Taille cible: {TARGET_SIZE_BYTES:,} bytes")
+print("="*80)
+print(f"🔄 GÉNÉRATION DE {TARGET_SIZE_MB} MB D'ÉVÉNEMENTS RÉALISTES")
+print("="*80)
 print()
 
 total_bytes = 0
@@ -277,14 +331,15 @@ total_events = 0
 batch_num = 1
 batch_events = []
 
-# Période de 30 jours
-start_time = int((datetime.now() - timedelta(days=30)).timestamp())
-end_time = int(datetime.now().timestamp())
+start_ts = int(start_time.timestamp())
+end_ts = int(end_time.timestamp())
+
+start_gen_time = time.time()
 
 try:
     while total_bytes < TARGET_SIZE_BYTES:
         # Timestamp aléatoire dans les 30 derniers jours
-        timestamp = random.randint(start_time, end_time)
+        timestamp = random.randint(start_ts, end_ts)
 
         # Générer événement
         event = generate_event(timestamp)
@@ -302,7 +357,11 @@ try:
             batch_size = os.path.getsize(filename)
             total_bytes += batch_size
 
-            print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size:,} bytes (Total: {total_bytes/1024/1024:.1f} MB / {TARGET_SIZE_MB} MB)")
+            elapsed = time.time() - start_gen_time
+            rate = total_events / elapsed if elapsed > 0 else 0
+
+            print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size/1024/1024:.1f} MB")
+            print(f"               Total: {total_bytes/1024/1024:.1f} / {TARGET_SIZE_MB} MB ({total_events:,} events, {rate:.0f} events/s)")
 
             batch_events = []
             batch_num += 1
@@ -321,7 +380,7 @@ try:
         batch_size = os.path.getsize(filename)
         total_bytes += batch_size
 
-        print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size:,} bytes (Total: {total_bytes/1024/1024:.1f} MB / {TARGET_SIZE_MB} MB)")
+        print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size/1024/1024:.1f} MB (Final)")
 
 except Exception as e:
     print(f"\n[!] Erreur: {e}")
@@ -331,12 +390,25 @@ except Exception as e:
 finally:
     conn.close()
 
+total_time = time.time() - start_gen_time
+
 print()
 print("="*80)
 print("✅ GÉNÉRATION TERMINÉE")
 print("="*80)
-print(f"Total événements: {total_events:,}")
-print(f"Total fichiers: {batch_num}")
-print(f"Taille totale: {total_bytes/1024/1024:.2f} MB")
-print(f"Fichiers: {OUTPUT_PREFIX}0001.json à {OUTPUT_PREFIX}{batch_num:04d}.json")
+print(f"Total événements:    {total_events:,}")
+print(f"Total fichiers:      {batch_num}")
+print(f"Taille totale:       {total_bytes/1024/1024:.2f} MB")
+print(f"Temps:               {total_time:.1f}s")
+print(f"Vitesse:             {total_events/total_time:.0f} événements/s")
+print(f"Fichiers:            {OUTPUT_PREFIX}0001.json à {OUTPUT_PREFIX}{batch_num:04d}.json")
+print()
+print("Caractéristiques:")
+print(f"  • {len(source_ips)} IPs sources RÉELLES de FusionAI")
+print(f"  • {len(dest_ips)} IPs destinations RÉELLES de FusionAI")
+print(f"  • {len(signatures_real)} signatures RÉELLES")
+print(f"  • {len(ad_users)} utilisateurs AD RÉELS")
+print(f"  • {len(assets)} assets CMDB RÉELS")
+print(f"  • Distribution de sévérité RÉELLE")
+print(f"  • Catégories RÉELLES (malcore, sigflow_alert, dga_detect, etc.)")
 print()
