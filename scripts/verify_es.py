@@ -3,16 +3,20 @@
 Script de vérification des données injectées dans Elasticsearch
 """
 
+import os
 import requests
 import json
+from dotenv import load_dotenv
 import urllib3
 urllib3.disable_warnings()
 
+load_dotenv()
+
 # Configuration Elasticsearch
-ES_URL = "https://localhost:9200"
-ES_USER = "elastic"
-ES_PASS = "3LYN_virPJ_TzasQ65qH"
-INDEX_PATTERN = "fusionai-*"
+ES_URL = os.getenv("ES_URL", "https://localhost:9200")
+ES_USER = os.getenv("ES_USER", "elastic")
+ES_PASS = os.getenv("ES_PASS", "3LYN_virPJ_TzasQ65qH")
+INDEX_PATTERN = os.getenv("INDEX_PATTERN", "fusionai-*")
 
 print("="*80)
 print("🔍 VÉRIFICATION DES DONNÉES ELASTICSEARCH")

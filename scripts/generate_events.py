@@ -8,15 +8,18 @@ import json
 import random
 import time
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 import sqlite3
 import csv
 import os
+
+load_dotenv()
 
 # Configuration
 TARGET_SIZE_MB = 500
 TARGET_SIZE_BYTES = TARGET_SIZE_MB * 1024 * 1024
 BATCH_SIZE = 100000  # Events par batch
-OUTPUT_PREFIX = "/home/debian/events_es_batch_"
+OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "/home/debian/events_es_batch_")
 
 print("="*80)
 print("🚀 GÉNÉRATEUR DE DONNÉES ELASTICSEARCH - FUSIONAI")
@@ -24,9 +27,9 @@ print("="*80)
 print()
 
 # Connexion à la base de données
-DB_PATH = '/home/debian/DATABASE_FusionAI.db'
+DB_PATH = os.getenv("DB_PATH", "/home/debian/DATABASE_FusionAI.db")
 if not os.path.exists(DB_PATH):
-    DB_PATH = '/tmp/DATABASE_FusionAI.db'
+    DB_PATH = os.getenv("DB_PATH_FALLBACK", "/tmp/DATABASE_FusionAI.db")
 
 print("[+] Connexion à la base de données FusionAI...")
 conn = sqlite3.connect(DB_PATH)
@@ -85,7 +88,7 @@ print(f"    ✓ Distribution sévérité RÉELLE")
 # Charger les utilisateurs AD RÉELS
 print("[+] Chargement des utilisateurs AD...")
 ad_users = []
-ad_users_file = '/home/debian/ad_users.csv'
+ad_users_file = os.getenv("AD_USERS_FILE", "/home/debian/ad_users.csv")
 if os.path.exists(ad_users_file):
     with open(ad_users_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
@@ -99,7 +102,7 @@ else:
 # Charger les assets CMDB RÉELS
 print("[+] Chargement des assets CMDB...")
 assets = []
-assets_file = '/home/debian/cmdb_assets.csv'
+assets_file = os.getenv("CMDB_ASSETS_FILE", "/home/debian/cmdb_assets.csv")
 if os.path.exists(assets_file):
     with open(assets_file, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)

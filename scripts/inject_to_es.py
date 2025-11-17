@@ -4,22 +4,26 @@ Script d'injection de données dans Elasticsearch via l'API Bulk
 Compatible avec Elasticsearch 8.x
 """
 
+import os
 import requests
 import json
 import time
 import glob
+from dotenv import load_dotenv
 import urllib3
 urllib3.disable_warnings()
 
+load_dotenv()
+
 # Configuration Elasticsearch
-ES_URL = "https://localhost:9200"
-ES_USER = "elastic"
-ES_PASS = "3LYN_virPJ_TzasQ65qH"
-ES_INDEX_PREFIX = "fusionai-security"
+ES_URL = os.getenv("ES_URL", "https://localhost:9200")
+ES_USER = os.getenv("ES_USER", "elastic")
+ES_PASS = os.getenv("ES_PASS", "3LYN_virPJ_TzasQ65qH")
+ES_INDEX_PREFIX = os.getenv("ES_INDEX_PREFIX", "fusionai-security")
 
 # Batch files
-BATCH_PATTERN = "/home/debian/events_es_batch_*.json"
-BULK_SIZE = 1000  # Nombre d'événements par requête bulk
+BATCH_PATTERN = os.getenv("BATCH_PATTERN", "/home/debian/events_es_batch_*.json")
+BULK_SIZE = int(os.getenv("BULK_SIZE", "1000"))  # Nombre d'événements par requête bulk
 
 print("="*80)
 print("🚀 INJECTION DE DONNÉES DANS ELASTICSEARCH")
