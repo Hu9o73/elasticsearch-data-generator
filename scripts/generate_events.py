@@ -7,11 +7,14 @@ Utilise les vraies données de FusionAI, Assets CMDB et Users AD
 import json
 import random
 import time
+import uuid
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import sqlite3
 import csv
 import os
+
+from attack_chains.playbooks import PLAYBOOKS
 
 load_dotenv()
 
@@ -20,6 +23,7 @@ TARGET_SIZE_MB = 500
 TARGET_SIZE_BYTES = TARGET_SIZE_MB * 1024 * 1024
 BATCH_SIZE = 100000  # Events par batch
 OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "/home/debian/events_es_batch_")
+ATTACK_CHAIN_RATIO = float(os.getenv("ATTACK_CHAIN_RATIO", "0.15"))  # fraction d'événements qui appartiennent à une chaîne
 
 print("="*80)
 print("🚀 GÉNÉRATEUR DE DONNÉES ELASTICSEARCH - FUSIONAI")
@@ -84,6 +88,7 @@ print(f"    ✓ {len(dest_ips)} IPs destinations RÉELLES")
 print(f"    ✓ {len(signatures_real)} signatures RÉELLES")
 print(f"    ✓ {len(categories_weighted)} catégories RÉELLES")
 print(f"    ✓ Distribution sévérité RÉELLE")
+print(f"    ✓ Ratio chaînes d'attaque: {ATTACK_CHAIN_RATIO}")
 
 # Charger les utilisateurs AD RÉELS
 print("[+] Chargement des utilisateurs AD...")
@@ -123,6 +128,21 @@ ip_to_asset = {}
 for asset in assets:
     if 'IP_Address' in asset and asset['IP_Address']:
         ip_to_asset[asset['IP_Address']] = asset
+
+# Contexte (réutilisé pour les chaînes d'attaque)
+chain_ctx = {
+    "source_ips": source_ips,
+    "dest_ips": dest_ips,
+    "signatures": signatures_real,
+    "categories_weighted": categories_weighted,
+    "severity_weighted": severity_weighted,
+    "real_src_ports": real_src_ports,
+    "real_dest_ports": real_dest_ports,
+    "real_protocols": real_protocols,
+    "ad_users": ad_users,
+    "assets": assets,
+    "ip_to_asset": ip_to_asset,
+}
 
 # Période temporelle (étendre de 13 jours à 30 jours)
 print("[+] Configuration temporelle:")
@@ -323,6 +343,14 @@ def generate_event(timestamp):
 
     return event
 
+
+def generate_attack_chain(start_ts: int, end_ts: int):
+    """Construit une chaîne d'attaque corrélée via les playbooks existants."""
+    attack_id = f"attack-{uuid.uuid4().hex[:10]}"
+    chain_start = random.randint(start_ts, end_ts)
+    playbook = random.choice(PLAYBOOKS)
+    return playbook(chain_ctx, attack_id, chain_start)
+
 # Génération des événements
 print("="*80)
 print(f"🔄 GÉNÉRATION DE {TARGET_SIZE_MB} MB D'ÉVÉNEMENTS RÉALISTES")
@@ -331,6 +359,8 @@ print()
 
 total_bytes = 0
 total_events = 0
+chain_count = 0
+chain_events_total = 0
 batch_num = 1
 batch_events = []
 
@@ -341,13 +371,34 @@ start_gen_time = time.time()
 
 try:
     while total_bytes < TARGET_SIZE_BYTES:
-        # Timestamp aléatoire dans les 30 derniers jours
-        timestamp = random.randint(start_ts, end_ts)
-
-        # Générer événement
-        event = generate_event(timestamp)
-        batch_events.append(event)
-        total_events += 1
+        # Générer soit une chaîne, soit un événement unique
+        if random.random() < ATTACK_CHAIN_RATIO:
+            chain_events = generate_attack_chain(start_ts, end_ts)
+            chain_count += 1
+            chain_events_total += len(chain_events)
+            for evt in chain_events:
+                batch_events.append(evt)
+                total_events += 1
+                if len(batch_events) >= BATCH_SIZE:
+                    filename = f"{OUTPUT_PREFIX}{batch_num:04d}.json"
+                    with open(filename, 'w') as f:
+                        for e in batch_events:
+                            f.write(json.dumps(e) + '\n')
+                    batch_size = os.path.getsize(filename)
+                    total_bytes += batch_size
+                    elapsed = time.time() - start_gen_time
+                    rate = total_events / elapsed if elapsed > 0 else 0
+                    print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size/1024/1024:.1f} MB")
+                    print(f"               Total: {total_bytes/1024/1024:.1f} / {TARGET_SIZE_MB} MB ({total_events:,} events, {rate:.0f} events/s)")
+                    batch_events = []
+                    batch_num += 1
+                    if total_bytes >= TARGET_SIZE_BYTES:
+                        break
+        else:
+            timestamp = random.randint(start_ts, end_ts)
+            event = generate_event(timestamp)
+            batch_events.append(event)
+            total_events += 1
 
         # Sauvegarder le batch si atteint
         if len(batch_events) >= BATCH_SIZE:
@@ -405,6 +456,7 @@ print(f"Taille totale:       {total_bytes/1024/1024:.2f} MB")
 print(f"Temps:               {total_time:.1f}s")
 print(f"Vitesse:             {total_events/total_time:.0f} événements/s")
 print(f"Fichiers:            {OUTPUT_PREFIX}0001.json à {OUTPUT_PREFIX}{batch_num:04d}.json")
+print(f"Chaînes générées:    {chain_count} (événements corrélés: {chain_events_total})")
 print()
 print("Caractéristiques:")
 print(f"  • {len(source_ips)} IPs sources RÉELLES de FusionAI")
