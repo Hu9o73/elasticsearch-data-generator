@@ -3,10 +3,15 @@
 
 import argparse
 import json
+import os
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def _iter_event_files(paths: List[Path]) -> Iterable[Path]:
@@ -125,10 +130,27 @@ def _print_counter(title: str, counter: Counter):
 
 def main():
     parser = argparse.ArgumentParser(description="Validate/generated NDJSON metrics.")
-    parser.add_argument("paths", nargs="+", help="Files or directories containing NDJSON output.")
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Files or directories containing NDJSON output. If omitted, uses OUTPUT_PREFIX env to locate files.",
+    )
     args = parser.parse_args()
 
-    metrics = summarize([Path(p) for p in args.paths])
+    targets: List[Path] = []
+    if args.paths:
+        targets = [Path(p) for p in args.paths]
+    else:
+        prefix = os.getenv("OUTPUT_PREFIX", "/home/debian/events_es_batch_")
+        base = Path(prefix).expanduser()
+        directory = base.parent
+        stem = base.name
+        glob_pattern = f"{stem}*.json"
+        targets = list(directory.glob(glob_pattern))
+        if not targets:
+            raise SystemExit(f"No files found for OUTPUT_PREFIX={prefix}")
+
+    metrics = summarize(targets)
 
     print(f"Files processed: {metrics['files_processed']}")
     print(f"Total events:    {metrics['total_events']}")
