@@ -25,6 +25,26 @@ def _shared_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {"user": user, "dst_ip": dst_ip, "asset": asset, "src_ip": src_ip}
 
 
+_STOP_PROB = {
+    ("blocked", "failure"): 0.8,
+    ("blocked", "unknown"): 0.5,
+    ("allowed", "failure"): 0.6,  # e.g., action said allowed but operation failed anyway
+    ("logged", "failure"): 0.4,
+}
+
+
+def _append_and_maybe_stop(events: List[Dict[str, Any]], evt: Dict[str, Any]) -> bool:
+    """Add event; optionally stop chain when enforcement likely terminated flow."""
+    events.append(evt)
+    action = evt.get("event", {}).get("action")
+    outcome = evt.get("event", {}).get("outcome")
+    prob = _STOP_PROB.get((action, outcome), 0)
+    if prob and random.random() < prob:
+        evt["chain_stop_reason"] = "blocked_mid_chain"
+        return True
+    return False
+
+
 def powershell_dropper_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> List[Dict[str, Any]]:
     """Windows initial access chain: email -> PowerShell -> dropped binary -> outbound HTTP."""
     shared = _shared_context(ctx)
@@ -40,7 +60,6 @@ def powershell_dropper_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int)
             "severity": "3",
             "attack": {"id": attack_id, "stage": "initial_access", "sequence": 1},
             "action": "blocked",
-            "outcome": "failure",
         },
     )
     encoded = "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=", k=80))
@@ -68,7 +87,8 @@ def powershell_dropper_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int)
         "path": "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\OneDriveUpdater",
         "data.strings": ["C:\\Windows\\Temp\\svch0st.exe -m update"],
     }
-    events.append(evt1)
+    if _append_and_maybe_stop(events, evt1):
+        return events
 
     # Step 2: recon after dropper landing
     evt2 = build_base_event(
@@ -80,7 +100,6 @@ def powershell_dropper_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int)
             "severity": "2",
             "attack": {"id": attack_id, "stage": "recon", "sequence": 2},
             "action": "logged",
-            "outcome": "success",
         },
     )
     evt2["process"] = {
@@ -88,7 +107,8 @@ def powershell_dropper_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int)
         "name": "whoami.exe",
         "command_line": "whoami /all",
     }
-    events.append(evt2)
+    if _append_and_maybe_stop(events, evt2):
+        return events
 
     # Step 3: exfil preparation via HTTPS PUT
     evt3 = build_base_event(
@@ -100,7 +120,6 @@ def powershell_dropper_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int)
             "severity": "3",
             "attack": {"id": attack_id, "stage": "exfiltration", "sequence": 3},
             "action": "blocked",
-            "outcome": random.choice(["failure", "success"]),
         },
     )
     evt3["file"] = {
@@ -112,7 +131,7 @@ def powershell_dropper_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int)
     evt3["http"] = {"method": "PUT", "response": {"status_code": random.choice([200, 403, 500])}}
     evt3["url"] = {"full": f"https://{_rand_domain()}/upload"}
     evt3["network"]["direction"] = "outbound"
-    events.append(evt3)
+    _append_and_maybe_stop(events, evt3)
 
     return events
 
@@ -134,11 +153,11 @@ def ssh_lateral_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> Lis
             "dest_port": 22,
             "direction": "inbound",
             "action": "blocked",
-            "outcome": "failure",
         },
     )
     evt1["logon"] = {"failure_reason": random.choice(["bad_password", "expired_password"]), "type": "network"}
-    events.append(evt1)
+    if _append_and_maybe_stop(events, evt1):
+        return events
 
     # Step 2: successful SSH and recon
     evt2 = build_base_event(
@@ -152,7 +171,6 @@ def ssh_lateral_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> Lis
             "dest_port": 22,
             "direction": "inbound",
             "action": "allowed",
-            "outcome": "success",
         },
     )
     evt2["process"] = {
@@ -160,7 +178,8 @@ def ssh_lateral_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> Lis
         "name": "ssh",
         "command_line": f"ssh -o StrictHostKeyChecking=no user@{shared['dst_ip']}",
     }
-    events.append(evt2)
+    if _append_and_maybe_stop(events, evt2):
+        return events
 
     # Step 3: staging data for exfil
     evt3 = build_base_event(
@@ -172,7 +191,6 @@ def ssh_lateral_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> Lis
             "severity": "3",
             "attack": {"id": attack_id, "stage": "collection", "sequence": 3},
             "action": "logged",
-            "outcome": random.choice(["success", "failure"]),
         },
     )
     evt3["process"] = {"name": "tar", "command_line": "tar -czf /tmp/ssl_backup.tgz /etc/ssl"}
@@ -183,7 +201,7 @@ def ssh_lateral_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> Lis
         "hash": {"sha256": _rand_hash()},
     }
     evt3["network"]["direction"] = "internal"
-    events.append(evt3)
+    _append_and_maybe_stop(events, evt3)
 
     return events
 
@@ -202,7 +220,6 @@ def ransomware_encryption_chain(ctx: Dict[str, Any], attack_id: str, start_ts: i
             "severity": "3",
             "attack": {"id": attack_id, "stage": "initial_access", "sequence": 1},
             "action": "blocked",
-            "outcome": "failure",
         },
     )
     evt1["process"] = {
@@ -217,7 +234,8 @@ def ransomware_encryption_chain(ctx: Dict[str, Any], attack_id: str, start_ts: i
         "size": random.randint(25000, 60000),
         "hash": {"sha256": _rand_hash()},
     }
-    events.append(evt1)
+    if _append_and_maybe_stop(events, evt1):
+        return events
 
     evt2 = build_base_event(
         start_ts + random.randint(20, 90),
@@ -228,7 +246,6 @@ def ransomware_encryption_chain(ctx: Dict[str, Any], attack_id: str, start_ts: i
             "severity": "4",
             "attack": {"id": attack_id, "stage": "defense_evasion", "sequence": 2},
             "action": "blocked",
-            "outcome": random.choice(["failure", "success"]),
         },
     )
     evt2["process"] = {
@@ -236,7 +253,8 @@ def ransomware_encryption_chain(ctx: Dict[str, Any], attack_id: str, start_ts: i
         "name": "vssadmin.exe",
         "command_line": "vssadmin delete shadows /all /quiet",
     }
-    events.append(evt2)
+    if _append_and_maybe_stop(events, evt2):
+        return events
 
     evt3 = build_base_event(
         start_ts + random.randint(120, 240),
@@ -247,7 +265,6 @@ def ransomware_encryption_chain(ctx: Dict[str, Any], attack_id: str, start_ts: i
             "severity": "4",
             "attack": {"id": attack_id, "stage": "impact", "sequence": 3},
             "action": "logged",
-            "outcome": "success",
         },
     )
     evt3["file"] = {
@@ -261,7 +278,7 @@ def ransomware_encryption_chain(ctx: Dict[str, Any], attack_id: str, start_ts: i
         "command_line": "encryptor.exe --threads 8 --paths C:\\Users",
     }
     evt3["network"]["direction"] = "internal"
-    events.append(evt3)
+    _append_and_maybe_stop(events, evt3)
 
     return events
 
@@ -282,12 +299,12 @@ def sql_injection_exfil_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int
             "dest_port": 443,
             "direction": "inbound",
             "action": "blocked",
-            "outcome": "failure",
         },
     )
     evt1["http"] = {"method": "POST", "response": {"status_code": random.choice([403, 500, 200])}}
     evt1["url"] = {"full": f"https://{_rand_domain()}/login.php?user=admin'--"}
-    events.append(evt1)
+    if _append_and_maybe_stop(events, evt1):
+        return events
 
     evt2 = build_base_event(
         start_ts + random.randint(30, 120),
@@ -298,7 +315,6 @@ def sql_injection_exfil_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int
             "severity": "3",
             "attack": {"id": attack_id, "stage": "collection", "sequence": 2},
             "action": "allowed",
-            "outcome": "success",
         },
     )
     evt2["process"] = {
@@ -311,7 +327,8 @@ def sql_injection_exfil_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int
         "size": random.randint(5_000_000, 25_000_000),
         "hash": {"sha256": _rand_hash()},
     }
-    events.append(evt2)
+    if _append_and_maybe_stop(events, evt2):
+        return events
 
     evt3 = build_base_event(
         start_ts + random.randint(150, 360),
@@ -322,7 +339,6 @@ def sql_injection_exfil_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int
             "severity": "3",
             "attack": {"id": attack_id, "stage": "exfiltration", "sequence": 3},
             "action": "blocked",
-            "outcome": random.choice(["success", "failure"]),
         },
     )
     evt3["http"] = {"method": "POST", "response": {"status_code": random.choice([200, 403])}}
@@ -334,7 +350,7 @@ def sql_injection_exfil_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int
         "hash": {"sha256": _rand_hash()},
     }
     evt3["network"]["direction"] = "outbound"
-    events.append(evt3)
+    _append_and_maybe_stop(events, evt3)
 
     return events
 
@@ -355,11 +371,11 @@ def rdp_persistence_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) ->
             "dest_port": 3389,
             "direction": "inbound",
             "action": "allowed",
-            "outcome": "success",
         },
     )
     evt1["logon"] = {"type": "rdp", "method": "network"}
-    events.append(evt1)
+    if _append_and_maybe_stop(events, evt1):
+        return events
 
     evt2 = build_base_event(
         start_ts + random.randint(15, 60),
@@ -370,14 +386,14 @@ def rdp_persistence_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) ->
             "severity": "2",
             "attack": {"id": attack_id, "stage": "persistence", "sequence": 2},
             "action": "logged",
-            "outcome": "success",
         },
     )
     evt2["process"] = {
         "name": "schtasks.exe",
         "command_line": 'schtasks /Create /SC MINUTE /MO 30 /TN "OneDrive Updater" /TR "C:\\Windows\\Temp\\svc.exe"',
     }
-    events.append(evt2)
+    if _append_and_maybe_stop(events, evt2):
+        return events
 
     evt3 = build_base_event(
         start_ts + random.randint(90, 300),
@@ -388,7 +404,6 @@ def rdp_persistence_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) ->
             "severity": "3",
             "attack": {"id": attack_id, "stage": "lateral_movement", "sequence": 3},
             "action": "logged",
-            "outcome": random.choice(["success", "failure"]),
         },
     )
     evt3["process"] = {
@@ -396,7 +411,7 @@ def rdp_persistence_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) ->
         "command_line": "mstsc.exe /v:fileserver01.fusionai.local",
     }
     evt3["network"]["direction"] = "internal"
-    events.append(evt3)
+    _append_and_maybe_stop(events, evt3)
 
     return events
 

@@ -58,6 +58,16 @@ def build_base_event(
     severity = overrides.get("severity") or weighted_choice(ctx.get("severity_weighted", []), "3")
     signature = overrides.get("signature") or (random.choice(ctx.get("signatures", [])) if ctx.get("signatures") else f"default_signature_{category}")
 
+    action = overrides.get("action") or random.choice(["allowed", "blocked", "logged"])
+    if overrides.get("outcome"):
+        outcome = overrides["outcome"]
+    elif action == "blocked":
+        outcome = "failure"
+    elif action == "allowed":
+        outcome = "success"
+    else:
+        outcome = random.choice(["success", "unknown", "failure"])
+
     src_ip = overrides.get("src_ip") or _choose_ip(ctx.get("source_ips", []), "198.51.100.10")
     dst_ip = overrides.get("dst_ip") or _choose_ip(ctx.get("dest_ips", []), "10.0.1.10")
 
@@ -78,8 +88,8 @@ def build_base_event(
             "type": "alert",
             "kind": "alert",
             "severity": severity_text,
-            "action": overrides.get("action") or random.choice(["allowed", "blocked", "logged"]),
-            "outcome": overrides.get("outcome") or random.choice(["success", "failure", "unknown"]),
+            "action": action,
+            "outcome": outcome,
             "module": category,
             "dataset": "fusionai.alerts",
         },
