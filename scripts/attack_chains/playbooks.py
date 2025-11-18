@@ -188,4 +188,223 @@ def ssh_lateral_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> Lis
     return events
 
 
-PLAYBOOKS = [powershell_dropper_chain, ssh_lateral_chain]
+def ransomware_encryption_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> List[Dict[str, Any]]:
+    """Windows ransomware flow: macro -> shadow copy wipe -> encryption + ransom note."""
+    shared = _shared_context(ctx)
+    events = []
+
+    evt1 = build_base_event(
+        start_ts,
+        ctx,
+        overrides={
+            **shared,
+            "category": "malicious_powershell_detect",
+            "severity": "3",
+            "attack": {"id": attack_id, "stage": "initial_access", "sequence": 1},
+            "action": "blocked",
+            "outcome": "failure",
+        },
+    )
+    evt1["process"] = {
+        "pid": random.randint(3000, 7000),
+        "name": "wscript.exe",
+        "command_line": "wscript.exe C:\\Users\\Public\\invoice.js",
+        "parent": {"name": "winword.exe", "command_line": "WINWORD.EXE /q /n"},
+    }
+    evt1["file"] = {
+        "path": "C:\\Users\\Public\\invoice.js",
+        "extension": "js",
+        "size": random.randint(25000, 60000),
+        "hash": {"sha256": _rand_hash()},
+    }
+    events.append(evt1)
+
+    evt2 = build_base_event(
+        start_ts + random.randint(20, 90),
+        ctx,
+        overrides={
+            **shared,
+            "category": "shellcode_detect",
+            "severity": "4",
+            "attack": {"id": attack_id, "stage": "defense_evasion", "sequence": 2},
+            "action": "blocked",
+            "outcome": random.choice(["failure", "success"]),
+        },
+    )
+    evt2["process"] = {
+        "pid": random.randint(6000, 11000),
+        "name": "vssadmin.exe",
+        "command_line": "vssadmin delete shadows /all /quiet",
+    }
+    events.append(evt2)
+
+    evt3 = build_base_event(
+        start_ts + random.randint(120, 240),
+        ctx,
+        overrides={
+            **shared,
+            "category": "sigflow_alert",
+            "severity": "4",
+            "attack": {"id": attack_id, "stage": "impact", "sequence": 3},
+            "action": "logged",
+            "outcome": "success",
+        },
+    )
+    evt3["file"] = {
+        "path": "C:\\Users\\Public\\readme_for_decryption.txt",
+        "extension": "txt",
+        "size": random.randint(2000, 6000),
+        "hash": {"sha256": _rand_hash()},
+    }
+    evt3["process"] = {
+        "name": "encryptor.exe",
+        "command_line": "encryptor.exe --threads 8 --paths C:\\Users",
+    }
+    evt3["network"]["direction"] = "internal"
+    events.append(evt3)
+
+    return events
+
+
+def sql_injection_exfil_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> List[Dict[str, Any]]:
+    """Web to DB compromise: SQLi probe -> dump -> HTTPS exfiltration."""
+    shared = _shared_context(ctx)
+    events = []
+
+    evt1 = build_base_event(
+        start_ts,
+        ctx,
+        overrides={
+            **shared,
+            "category": "malcore",
+            "severity": "2",
+            "attack": {"id": attack_id, "stage": "initial_access", "sequence": 1},
+            "dest_port": 443,
+            "direction": "inbound",
+            "action": "blocked",
+            "outcome": "failure",
+        },
+    )
+    evt1["http"] = {"method": "POST", "response": {"status_code": random.choice([403, 500, 200])}}
+    evt1["url"] = {"full": f"https://{_rand_domain()}/login.php?user=admin'--"}
+    events.append(evt1)
+
+    evt2 = build_base_event(
+        start_ts + random.randint(30, 120),
+        ctx,
+        overrides={
+            **shared,
+            "category": "retrohunt",
+            "severity": "3",
+            "attack": {"id": attack_id, "stage": "collection", "sequence": 2},
+            "action": "allowed",
+            "outcome": "success",
+        },
+    )
+    evt2["process"] = {
+        "name": "mysqldump",
+        "command_line": "mysqldump -u webapp -p*** customers > /tmp/customer_dump.sql",
+    }
+    evt2["file"] = {
+        "path": "/tmp/customer_dump.sql",
+        "extension": "sql",
+        "size": random.randint(5_000_000, 25_000_000),
+        "hash": {"sha256": _rand_hash()},
+    }
+    events.append(evt2)
+
+    evt3 = build_base_event(
+        start_ts + random.randint(150, 360),
+        ctx,
+        overrides={
+            **shared,
+            "category": "sigflow_alert",
+            "severity": "3",
+            "attack": {"id": attack_id, "stage": "exfiltration", "sequence": 3},
+            "action": "blocked",
+            "outcome": random.choice(["success", "failure"]),
+        },
+    )
+    evt3["http"] = {"method": "POST", "response": {"status_code": random.choice([200, 403])}}
+    evt3["url"] = {"full": f"https://cdn.{_rand_domain()}/upload"}
+    evt3["file"] = {
+        "path": "/tmp/customer_dump.sql.gz",
+        "extension": "gz",
+        "size": random.randint(2_000_000, 10_000_000),
+        "hash": {"sha256": _rand_hash()},
+    }
+    evt3["network"]["direction"] = "outbound"
+    events.append(evt3)
+
+    return events
+
+
+def rdp_persistence_chain(ctx: Dict[str, Any], attack_id: str, start_ts: int) -> List[Dict[str, Any]]:
+    """Credential reuse leading to RDP access and persistence via scheduled task."""
+    shared = _shared_context(ctx)
+    events = []
+
+    evt1 = build_base_event(
+        start_ts,
+        ctx,
+        overrides={
+            **shared,
+            "category": "malcore",
+            "severity": "2",
+            "attack": {"id": attack_id, "stage": "credential_access", "sequence": 1},
+            "dest_port": 3389,
+            "direction": "inbound",
+            "action": "allowed",
+            "outcome": "success",
+        },
+    )
+    evt1["logon"] = {"type": "rdp", "method": "network"}
+    events.append(evt1)
+
+    evt2 = build_base_event(
+        start_ts + random.randint(15, 60),
+        ctx,
+        overrides={
+            **shared,
+            "category": "retrohunt",
+            "severity": "2",
+            "attack": {"id": attack_id, "stage": "persistence", "sequence": 2},
+            "action": "logged",
+            "outcome": "success",
+        },
+    )
+    evt2["process"] = {
+        "name": "schtasks.exe",
+        "command_line": 'schtasks /Create /SC MINUTE /MO 30 /TN "OneDrive Updater" /TR "C:\\Windows\\Temp\\svc.exe"',
+    }
+    events.append(evt2)
+
+    evt3 = build_base_event(
+        start_ts + random.randint(90, 300),
+        ctx,
+        overrides={
+            **shared,
+            "category": "sigflow_alert",
+            "severity": "3",
+            "attack": {"id": attack_id, "stage": "lateral_movement", "sequence": 3},
+            "action": "logged",
+            "outcome": random.choice(["success", "failure"]),
+        },
+    )
+    evt3["process"] = {
+        "name": "mstsc.exe",
+        "command_line": "mstsc.exe /v:fileserver01.fusionai.local",
+    }
+    evt3["network"]["direction"] = "internal"
+    events.append(evt3)
+
+    return events
+
+
+PLAYBOOKS = [
+    powershell_dropper_chain,
+    ssh_lateral_chain,
+    ransomware_encryption_chain,
+    sql_injection_exfil_chain,
+    rdp_persistence_chain,
+]
