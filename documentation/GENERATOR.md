@@ -57,6 +57,11 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
   - `ransomware_encryption_chain`: macro → shadow copy wipe → encryptor + ransom note.
   - `sql_injection_exfil_chain`: SQLi POST → mysqldump → HTTPS exfil of compressed dump.
   - `rdp_persistence_chain`: RDP logon → scheduled task persistence → internal MSTSC pivot.
+  - `vpn_phishing_chain`: Foreign VPN logon → hidden PowerShell execution → outbound credential exfil.
+  - `kerberos_golden_ticket_chain`: `mimikatz` credential theft → Kerberos ticket validation → `wmic` lateral move.
+  - `linux_crypto_miner_chain`: Curl pipe-to-bash installer → miner drop → outbound pool connections.
+  - `cloud_cli_abuse_chain`: AWS CLI credentials configured → inventory commands → `s3 sync` data theft.
+  - `smb_data_wiper_chain`: PsExec lateral move → event log clearing → `cipher.exe` destructive wipe.
 
 ## Output
 - Files: `OUTPUT_PREFIX####.json` (NDJSON batches), each line an event.
