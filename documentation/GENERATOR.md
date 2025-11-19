@@ -3,7 +3,7 @@
 How the attack-chain generator produces NDJSON files, where the data comes from, and how the pieces fit together.
 
 ## Inputs & configuration
-- Environment: `scripts/.env` (or shell env) controls `DB_PATH`, `OUTPUT_PREFIX`, `TARGET_EVENTS`, `BATCH_SIZE`, `ATTACK_CHAIN_RATIO`, and fallbacks for CSVs.
+- Environment: `scripts/.env` (or shell env) controls `DB_PATH`, `OUTPUT_PREFIX`, `TARGET_EVENTS`, `BATCH_SIZE`, `ATTACK_CHAIN_RATIO`, `NOISE_RATIO`, and fallbacks for CSVs.
 - Data sources:
   - SQLite alerts DB (`DB_PATH` or `DB_PATH_FALLBACK`) for IPs, ports, signatures, categories, severities, and protocol distributions.
   - AD users CSV (`AD_USERS_FILE`, default `/home/debian/ad_users.csv`).
@@ -31,7 +31,8 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
   1. Loads context.
   2. Chooses a 30-day time window.
   3. Loops until `TARGET_EVENTS` reached:
-     - With probability `ATTACK_CHAIN_RATIO`, generate a correlated chain; otherwise generate a single event.
+     - With probability `NOISE_RATIO`, emit a low-severity benign/false-positive alert (`fusionai.noise=true`).
+     - Else, with probability `ATTACK_CHAIN_RATIO`, generate a correlated chain; otherwise emit a standalone alert.
      - Accumulates events in memory until `BATCH_SIZE`, then writes NDJSON and starts a new batch.
   4. Prints throughput and file paths on completion.
 
@@ -66,5 +67,10 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
 - Execute: `python scripts/generate_attack_chains.py` (or invoke `generate_events_to_disk()` directly).
 - Tune realism/performance with env vars:
   - Volume: `TARGET_EVENTS`, `BATCH_SIZE`.
-  - Correlation: `ATTACK_CHAIN_RATIO`.
+  - Correlation vs. background noise: `ATTACK_CHAIN_RATIO`, `NOISE_RATIO`.
   - Data realism: `DB_PATH`, `AD_USERS_FILE`, `CMDB_ASSETS_FILE`.
+
+> **Notes on observed ratios**
+> - Ratios are evaluated per draw. Attack chains usually emit multiple documents (often 3+), so they consume a larger share of the final event count than the raw probability might imply.
+> - Noise events are always singletons and generation stops once the size target is reached, so the observed noise percentage can trail the configured `NOISE_RATIO` slightly when the last batch overshoots the goal.
+> - For exact event-level percentages, post-process the output (e.g., trim/append standalone alerts) or track draw counts instead of emitted events when reporting.

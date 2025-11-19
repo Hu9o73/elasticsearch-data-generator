@@ -23,7 +23,18 @@ TARGET_SIZE_MB = 500
 TARGET_SIZE_BYTES = TARGET_SIZE_MB * 1024 * 1024
 BATCH_SIZE = 100000  # Events par batch
 OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "/home/debian/events_es_batch_")
-ATTACK_CHAIN_RATIO = float(os.getenv("ATTACK_CHAIN_RATIO", "0.15"))  # fraction d'événements qui appartiennent à une chaîne
+def clamp_ratio(value):
+    return min(max(value, 0.0), 0.95)
+
+
+ATTACK_CHAIN_RATIO = clamp_ratio(float(os.getenv("ATTACK_CHAIN_RATIO", "0.15")))  # fraction d'événements dans une chaîne
+NOISE_RATIO = clamp_ratio(float(os.getenv("NOISE_RATIO", "0.20")))  # fraction d'événements bruit/FP
+ratio_warning = None
+if ATTACK_CHAIN_RATIO + NOISE_RATIO > 0.95:
+    scale = 0.95 / (ATTACK_CHAIN_RATIO + NOISE_RATIO)
+    ATTACK_CHAIN_RATIO *= scale
+    NOISE_RATIO *= scale
+    ratio_warning = "[!] Ratios ajustés pour conserver des événements standards suffisants."
 
 print("="*80)
 print("🚀 GÉNÉRATEUR DE DONNÉES ELASTICSEARCH - FUSIONAI")
@@ -89,6 +100,9 @@ print(f"    ✓ {len(signatures_real)} signatures RÉELLES")
 print(f"    ✓ {len(categories_weighted)} catégories RÉELLES")
 print(f"    ✓ Distribution sévérité RÉELLE")
 print(f"    ✓ Ratio chaînes d'attaque: {ATTACK_CHAIN_RATIO}")
+print(f"    ✓ Ratio bruit/FP: {NOISE_RATIO}")
+if ratio_warning:
+    print(f"    {ratio_warning}")
 
 # Charger les utilisateurs AD RÉELS
 print("[+] Chargement des utilisateurs AD...")
@@ -164,37 +178,38 @@ def weighted_choice(choices_weights):
         upto += weight
     return choices[-1]
 
-def generate_event(timestamp):
-    """Génère un événement réaliste basé sur les VRAIES données FusionAI"""
 
-    # Utiliser les distributions RÉELLES
-    category = weighted_choice(categories_weighted)
-    severity = weighted_choice(severity_weighted)
-    signature = random.choice(signatures_real)
+def build_event(timestamp, overrides=None):
+    """Construit un événement ECS basique avec possibilité de forcer certains champs."""
+    overrides = overrides or {}
 
-    # IPs RÉELLES
-    src_ip = random.choice(source_ips)
-    dst_ip = random.choice(dest_ips)
+    category = overrides.get("category") or weighted_choice(categories_weighted)
+    severity = overrides.get("severity") or weighted_choice(severity_weighted)
+    signature = overrides.get("signature") or random.choice(signatures_real)
 
-    # Trouver l'asset correspondant à l'IP destination
-    asset = ip_to_asset.get(dst_ip)
-    if not asset:
-        asset = random.choice(assets)
+    src_ip = overrides.get("src_ip") or random.choice(source_ips)
+    dst_ip = overrides.get("dst_ip") or random.choice(dest_ips)
 
-    # User aléatoire
-    user = random.choice(ad_users)
+    asset = overrides.get("asset") or ip_to_asset.get(dst_ip) or random.choice(assets)
+    user = overrides.get("user") or random.choice(ad_users)
 
-    # Ports réels
-    src_port = random.choice(real_src_ports) if real_src_ports else random.randint(49152, 65535)
-    dest_port = random.choice(real_dest_ports) if real_dest_ports else random.choice([80, 443, 445, 3389, 22])
+    src_port = overrides.get("src_port") or (random.choice(real_src_ports) if real_src_ports else random.randint(49152, 65535))
+    dest_port = overrides.get("dest_port") or (random.choice(real_dest_ports) if real_dest_ports else random.choice([80, 443, 445, 3389, 22]))
+    protocol = overrides.get("protocol") or (random.choice(real_protocols) if real_protocols else "TCP")
 
-    # Protocole réel
-    protocol = random.choice(real_protocols) if real_protocols else "TCP"
+    action = overrides.get("action") or random.choice(["allowed", "blocked", "logged"])
+    if "outcome" in overrides:
+        outcome = overrides["outcome"]
+    elif action == "blocked":
+        outcome = "failure"
+    elif action == "allowed":
+        outcome = "success"
+    else:
+        outcome = random.choice(["success", "failure", "unknown"])
 
-    # Timestamp ISO 8601
+    direction = overrides.get("direction") or random.choice(["inbound", "outbound", "internal"])
+
     dt = datetime.fromtimestamp(timestamp)
-
-    # Mapper sévérité numérique vers texte
     severity_map = {
         "1": "low",
         "2": "medium",
@@ -203,7 +218,6 @@ def generate_event(timestamp):
     }
     severity_text = severity_map.get(str(severity), "medium")
 
-    # Mapper catégorie vers technique MITRE (approximatif)
     mitre_map = {
         "malcore": ("T1059", "Execution"),
         "sigflow_alert": ("T1071", "Command and Control"),
@@ -212,26 +226,20 @@ def generate_event(timestamp):
         "shellcode_detect": ("T1055", "Defense Evasion"),
         "retrohunt": ("T1087", "Discovery")
     }
-
     mitre_technique, mitre_tactic = mitre_map.get(category, ("T1071", "Unknown"))
 
-    # Construire l'événement au format ECS
     event = {
         "@timestamp": dt.isoformat(),
-
-        # Event metadata
         "event": {
             "category": "security",
             "type": "alert",
             "kind": "alert",
             "severity": severity_text,
-            "action": random.choice(["allowed", "blocked", "logged"]),
-            "outcome": random.choice(["success", "failure", "unknown"]),
+            "action": action,
+            "outcome": outcome,
             "module": category,
             "dataset": "fusionai.alerts"
         },
-
-        # Network data
         "source": {
             "ip": src_ip,
             "port": src_port,
@@ -245,19 +253,15 @@ def generate_event(timestamp):
         "network": {
             "protocol": protocol.lower() if protocol else "tcp",
             "bytes": random.randint(600, 150000),
-            "direction": random.choice(["inbound", "outbound", "internal"])
+            "direction": direction
         },
-
-        # User info
         "user": {
             "name": user.get('Username', 'unknown'),
-            "domain": "fusionai.local",
+            "domain": overrides.get("user_domain", "fusionai.local"),
             "email": user.get('Email', ''),
             "department": user.get('Department', 'Unknown'),
             "full_name": user.get('Display_Name', '')
         },
-
-        # Host/Asset info
         "host": {
             "name": asset.get('Hostname', 'unknown'),
             "hostname": asset.get('Hostname', 'unknown'),
@@ -272,8 +276,6 @@ def generate_event(timestamp):
                 "static_level": asset.get('Criticality', 'Medium').lower()
             }
         },
-
-        # Threat intel - MITRE ATT&CK
         "threat": {
             "framework": "MITRE ATT&CK",
             "technique": {
@@ -284,15 +286,11 @@ def generate_event(timestamp):
                 "name": [mitre_tactic]
             }
         },
-
-        # Alert/Security data
         "rule": {
             "name": signature,
             "category": category,
-            "id": str(random.randint(1000, 9999))
+            "id": overrides.get("rule_id") or str(random.randint(1000, 9999))
         },
-
-        # FusionAI specific fields
         "fusionai": {
             "signature": signature,
             "category": category,
@@ -301,22 +299,21 @@ def generate_event(timestamp):
             "asset_location": asset.get('Location', ''),
             "asset_department": asset.get('Department', '')
         },
-
-        # Tags
         "tags": [
             category,
             severity_text,
             "fusionai",
             asset.get('Location', 'unknown').lower().replace(' ', '_')
         ],
-
-        # Labels
         "labels": {
             "env": "production",
             "source": "fusionai_generator",
             "data_source": "real_fusion_ai"
         }
     }
+
+    if overrides.get("attack"):
+        event["attack"] = overrides["attack"]
 
     # Ajouter des champs spécifiques selon la catégorie
     if "powershell" in category.lower():
@@ -327,7 +324,6 @@ def generate_event(timestamp):
         }
 
     if "dga" in category.lower():
-        # DGA domain
         domain_length = random.randint(10, 20)
         dga_domain = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=domain_length)) + ".com"
         event["dns"] = {
@@ -340,6 +336,64 @@ def generate_event(timestamp):
     if "scan" in signature.lower() or "port_scan" in category.lower():
         event["fusionai"]["scan_type"] = random.choice(["TCP SYN", "TCP ACK", "UDP", "XMAS"])
         event["fusionai"]["ports_scanned"] = random.randint(50, 5000)
+
+    return event
+
+
+def generate_event(timestamp):
+    """Génère un événement réaliste basé sur les VRAIES données FusionAI"""
+    return build_event(timestamp)
+
+
+def generate_noise_event(timestamp):
+    """Crée un faux positif ou une alerte bénigne pour polluer légèrement les données."""
+    scenario = random.choice(["dns_update", "internal_scanner", "admin_login"])
+    if scenario == "dns_update":
+        overrides = {
+            "category": "benign_dns_activity",
+            "signature": "Windows Update DNS Lookup",
+            "severity": "1",
+            "action": "logged",
+            "outcome": "success",
+            "direction": "outbound"
+        }
+    elif scenario == "internal_scanner":
+        overrides = {
+            "category": "false_positive_scan",
+            "signature": "Internal vulnerability scanner",
+            "severity": "2",
+            "action": "blocked",
+            "outcome": "failure",
+            "direction": "internal"
+        }
+    else:
+        overrides = {
+            "category": "benign_user_activity",
+            "signature": "Known admin login",
+            "severity": "1",
+            "action": "allowed",
+            "outcome": "success",
+            "direction": "internal"
+        }
+
+    event = build_event(timestamp, overrides)
+    event["fusionai"]["noise"] = True
+    event["tags"].append("noise")
+    event["labels"]["noise_type"] = scenario
+
+    if scenario == "dns_update":
+        domain = f"windowsupdate.{random.choice(['microsoft.com', 'windows.com'])}"
+        event["dns"] = {
+            "question": {
+                "name": domain,
+                "type": "A"
+            }
+        }
+    elif scenario == "internal_scanner":
+        event["fusionai"]["scan_type"] = "internal_compliance"
+        event["fusionai"]["ports_scanned"] = random.randint(10, 250)
+    else:
+        event["logon"] = {"type": "network", "status": "success", "method": "kerberos"}
 
     return event
 
@@ -361,6 +415,7 @@ total_bytes = 0
 total_events = 0
 chain_count = 0
 chain_events_total = 0
+noise_events = 0
 batch_num = 1
 batch_events = []
 
@@ -371,8 +426,15 @@ start_gen_time = time.time()
 
 try:
     while total_bytes < TARGET_SIZE_BYTES:
-        # Générer soit une chaîne, soit un événement unique
-        if random.random() < ATTACK_CHAIN_RATIO:
+        # Générer soit une chaîne, soit un événement unique, soit du bruit
+        pick = random.random()
+        if pick < NOISE_RATIO:
+            timestamp = random.randint(start_ts, end_ts)
+            event = generate_noise_event(timestamp)
+            batch_events.append(event)
+            total_events += 1
+            noise_events += 1
+        elif pick < NOISE_RATIO + ATTACK_CHAIN_RATIO:
             chain_events = generate_attack_chain(start_ts, end_ts)
             chain_count += 1
             chain_events_total += len(chain_events)
@@ -456,7 +518,10 @@ print(f"Taille totale:       {total_bytes/1024/1024:.2f} MB")
 print(f"Temps:               {total_time:.1f}s")
 print(f"Vitesse:             {total_events/total_time:.0f} événements/s")
 print(f"Fichiers:            {OUTPUT_PREFIX}0001.json à {OUTPUT_PREFIX}{batch_num:04d}.json")
-print(f"Chaînes générées:    {chain_count} (événements corrélés: {chain_events_total})")
+chain_pct = (chain_events_total / total_events * 100) if total_events else 0
+noise_pct = (noise_events / total_events * 100) if total_events else 0
+print(f"Chaînes générées:    {chain_count} (événements corrélés: {chain_events_total}, {chain_pct:.1f}% du total)")
+print(f"Bruit / FP:          {noise_events} événements ({noise_pct:.1f}% du total)")
 print()
 print("Caractéristiques:")
 print(f"  • {len(source_ips)} IPs sources RÉELLES de FusionAI")

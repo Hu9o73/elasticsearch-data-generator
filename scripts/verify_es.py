@@ -63,6 +63,8 @@ except Exception as e:
 
 print()
 
+total_events = 0
+
 # 3. Compter les événements
 print("[3] Nombre total d'événements...")
 try:
@@ -74,8 +76,8 @@ try:
 
     if response.status_code == 200:
         result = response.json()
-        count = result.get('count', 0)
-        print(f"    [✓] Total: {count:,} événements")
+        total_events = result.get('count', 0)
+        print(f"    [✓] Total: {total_events:,} événements")
     else:
         print(f"    [✗] Erreur: {response.status_code}")
 except Exception as e:
@@ -83,8 +85,8 @@ except Exception as e:
 
 print()
 
-# 4. Statistiques par sévérité
-print("[4] Répartition par sévérité...")
+# 4. Volume & mix d'alertes
+print("[4] Volume & mix d'alertes...")
 try:
     query = {
         "size": 0,
@@ -93,6 +95,21 @@ try:
                 "terms": {
                     "field": "event.severity",
                     "size": 10
+                }
+            },
+            "chain_events": {
+                "filter": {
+                    "exists": {"field": "attack.id"}
+                }
+            },
+            "unique_chains": {
+                "cardinality": {
+                    "field": "attack.id.keyword"
+                }
+            },
+            "noise_events": {
+                "filter": {
+                    "term": {"fusionai.noise": True}
                 }
             }
         }
@@ -108,11 +125,25 @@ try:
 
     if response.status_code == 200:
         result = response.json()
-        buckets = result.get('aggregations', {}).get('by_severity', {}).get('buckets', [])
-        for bucket in buckets:
-            severity = bucket['key']
-            count = bucket['doc_count']
-            print(f"    {severity.upper():12s}: {count:,}")
+        aggs = result.get('aggregations', {})
+        chain_evt = aggs.get('chain_events', {}).get('doc_count', 0)
+        noise_evt = aggs.get('noise_events', {}).get('doc_count', 0)
+        unique_chains = aggs.get('unique_chains', {}).get('value', 0)
+
+        chain_pct = (chain_evt / total_events * 100) if total_events else 0
+        noise_pct = (noise_evt / total_events * 100) if total_events else 0
+
+        print(f"    Chaînes corrélées : {chain_evt:,} événements ({chain_pct:.1f}%) sur {unique_chains:,} chaînes")
+        print(f"    Faux positifs/bruit : {noise_evt:,} événements ({noise_pct:.1f}%)")
+
+        buckets = aggs.get('by_severity', {}).get('buckets', [])
+        if buckets:
+            print("    Mix de sévérité :")
+            for bucket in buckets:
+                severity = bucket['key']
+                count = bucket['doc_count']
+                pct = (count / total_events * 100) if total_events else 0
+                print(f"        {severity.upper():10s}: {count:,} ({pct:.1f}%)")
     else:
         print(f"    [✗] Erreur: {response.status_code}")
 except Exception as e:
