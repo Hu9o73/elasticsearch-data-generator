@@ -63,6 +63,15 @@ pip install -r requirements.txt
    - `ad_users.csv` (optionnel) - Liste des utilisateurs Active Directory
    - `cmdb_assets.csv` (optionnel) - Liste des assets de votre CMDB
 
+## ⚡ Quickstart (attack-chain generator)
+- Copiez `scripts/.env.example` vers `scripts/.env` et ajustez les chemins (`DB_PATH`, `AD_USERS_FILE`, `CMDB_ASSETS_FILE`, `OUTPUT_PREFIX`).
+- (Optionnel) Fixez une graine pour des runs reproductibles: exportez `SEED=42`.
+- Générez les chaînes corrélées + bruit réaliste:
+  ```bash
+  python3 scripts/generate_attack_chains.py
+  ```
+- Les NDJSON sont écrits sous `OUTPUT_PREFIX####.json`; un résumé JSON est produit à `SUMMARY_PATH` (ou `<OUTPUT_PREFIX>_summary.json` par défaut).
+
 ## 💻 Utilisation
 
 ### 1. Démarrer Elasticsearch
@@ -210,6 +219,14 @@ GET /fusionai-*/_search
   }
 }
 ```
+
+## 🧪 Tests
+- Les tests unitaires valident quelques invariants du générateur (bornes de ratios, clamp des timestamps, cohérence host/destination) via `unittest`.
+- Exécution:
+  ```bash
+  python -m unittest tests/test_generator.py
+  ```
+  Ajoutez le projet à `PYTHONPATH` si besoin; `tests/test_generator.py` l’insère automatiquement depuis la racine.
 
 ### Événements d'une IP Spécifique
 ```json

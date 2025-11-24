@@ -4,6 +4,8 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
 
 ## Inputs & configuration
 - Environment: `scripts/.env` (or shell env) controls `DB_PATH`, `OUTPUT_PREFIX`, `TARGET_EVENTS`, `BATCH_SIZE`, `ATTACK_CHAIN_RATIO`, `NOISE_RATIO`, and fallbacks for CSVs.
+- Reproducibility: set `SEED` to seed Python’s RNG for deterministic draws.
+- Summary: override `SUMMARY_PATH` to control where the run summary JSON is written (default `<OUTPUT_PREFIX>_summary.json`).
 - Data sources:
   - SQLite alerts DB (`DB_PATH` or `DB_PATH_FALLBACK`) for IPs, ports, signatures, categories, severities, and protocol distributions.
   - AD users CSV (`AD_USERS_FILE`, default `/home/debian/ad_users.csv`).
@@ -34,7 +36,8 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
      - With probability `NOISE_RATIO`, emit a low-severity benign/false-positive alert (`fusionai.noise=true`).
      - Else, with probability `ATTACK_CHAIN_RATIO`, generate a correlated chain; otherwise emit a standalone alert.
      - Accumulates events in memory until `BATCH_SIZE`, then writes NDJSON and starts a new batch.
-  4. Prints throughput and file paths on completion.
+ 4. Prints throughput and file paths on completion.
+ 5. Persists a run summary (seed, observed ratios, counts, window, batches) to `SUMMARY_PATH`.
 
 ### Single-event path
 - `_generate_single_event(ctx, start_ts, end_ts)`:

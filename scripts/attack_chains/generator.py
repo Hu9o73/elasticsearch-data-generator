@@ -143,6 +143,14 @@ def _generate_noise_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Di
 
 def generate_events_to_disk() -> None:
     """Generate standalone events and correlated attack chains to NDJSON files."""
+    seed = os.getenv("SEED")
+    if seed is not None:
+        try:
+            random.seed(int(seed))
+        except ValueError:
+            random.seed(seed)
+        print(f"[+] Seeded RNG with SEED={seed}")
+
     ctx = load_context()
 
     target_events = int(os.getenv("TARGET_EVENTS", "50000"))
@@ -215,6 +223,28 @@ def generate_events_to_disk() -> None:
         f"built_chains={chains_built}"
     )
     print(f"[+] Files: {output_prefix}0001.json .. {output_prefix}{batch_num:04d}.json")
+
+    summary = {
+        "seed": seed,
+        "target_events": target_events,
+        "total_events": total_events,
+        "chains_built": chains_built,
+        "chain_events": chain_event_count,
+        "noise_events": noise_events,
+        "chain_ratio_effective_pct": round(chain_pct, 2),
+        "noise_ratio_effective_pct": round(noise_pct, 2),
+        "window_start": start_ts,
+        "window_end": end_ts,
+        "rate_eps": round(rate, 2),
+        "batches": batch_num,
+    }
+    summary_path = os.getenv("SUMMARY_PATH", f"{output_prefix.rstrip('_')}_summary.json")
+    try:
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"[+] Summary written to {summary_path}")
+    except OSError as exc:
+        print(f"[!] Failed to write summary {summary_path}: {exc}")
 
 
 def _save_batch(batch_events: List[Dict[str, Any]], output_prefix: str, batch_num: int) -> None:
