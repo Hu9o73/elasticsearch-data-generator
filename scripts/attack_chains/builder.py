@@ -84,7 +84,8 @@ def _mitre_for_category(category: str) -> Tuple[str, str]:
 def _resolve_asset(dst_ip: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     if ctx.get("ip_to_asset") and dst_ip in ctx["ip_to_asset"]:
         return ctx["ip_to_asset"][dst_ip]
-    return random.choice(ctx["assets"])
+    # Fall back to any known asset to keep host metadata populated
+    return random.choice(ctx["assets"]) if ctx.get("assets") else {}
 
 
 def build_base_event(
@@ -111,9 +112,13 @@ def build_base_event(
         outcome = random.choice(["success", "unknown", "failure"])
 
     src_ip = overrides.get("src_ip") or _choose_ip(ctx.get("source_ips", []), "198.51.100.10")
-    dst_ip = overrides.get("dst_ip") or _choose_ip(ctx.get("dest_ips", []), "10.0.1.10")
+    override_dst_ip = overrides.get("dst_ip")
+    dst_ip = override_dst_ip or _choose_ip(ctx.get("dest_ips", []), "10.0.1.10")
 
     asset = overrides.get("asset") or _resolve_asset(dst_ip, ctx)
+    # If we picked an unmapped asset and the caller did not force a dst_ip, align destination with the asset IP
+    if not override_dst_ip and not overrides.get("asset") and asset.get("IP_Address"):
+        dst_ip = asset["IP_Address"]
     user = overrides.get("user") or random.choice(ctx.get("ad_users", [{"Username": "unknown"}]))
 
     src_port = overrides.get("src_port") or (random.choice(ctx.get("real_src_ports", [])) if ctx.get("real_src_ports") else random.randint(49152, 65535))
@@ -153,7 +158,7 @@ def build_base_event(
             "name": asset.get("Hostname", "unknown"),
             "hostname": asset.get("Hostname", "unknown"),
             "type": asset.get("Asset_Type", "Unknown"),
-            "ip": [dst_ip],
+            "ip": [asset.get("IP_Address", dst_ip)],
             "mac": [asset.get("MAC_Address", "")] if asset.get("MAC_Address") else [],
             "os": {
                 "name": asset.get("OS", "Unknown"),

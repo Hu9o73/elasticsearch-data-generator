@@ -21,6 +21,18 @@ def _choose_time_window(days: int = 30) -> (int, int):
     return int(start_time.timestamp()), int(end_time.timestamp())
 
 
+def _clamp_event_time(event: Dict[str, Any], start_ts: int, end_ts: int) -> Dict[str, Any]:
+    """Ensure event @timestamp stays within the chosen window."""
+    try:
+        ts = int(datetime.fromisoformat(event["@timestamp"]).timestamp())
+    except (KeyError, ValueError, TypeError):
+        return event
+    clamped_ts = min(max(ts, start_ts), end_ts)
+    if clamped_ts != ts:
+        event["@timestamp"] = datetime.fromtimestamp(clamped_ts).isoformat()
+    return event
+
+
 def _generate_single_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Dict[str, Any]:
     ts = random.randint(start_ts, end_ts)
     event = build_base_event(ts, ctx)
@@ -97,6 +109,7 @@ def _generate_noise_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Di
             "action": "logged",
             "outcome": "success",
             "direction": "internal",
+            "dst_ip": random.choice(ctx.get("dest_ips", ["10.0.3.10"])),
         }
 
     event = build_base_event(ts, ctx, overrides=overrides)
@@ -123,7 +136,6 @@ def _generate_noise_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Di
         event["network"]["direction"] = "outbound"
     else:
         event["fusionai"]["scan_type"] = "red_team"
-        event["destination"]["ip"] = random.choice(ctx.get("dest_ips", ["10.0.3.10"]))
         event["network"]["direction"] = "internal"
 
     return event
@@ -163,6 +175,7 @@ def generate_events_to_disk() -> None:
         pick = random.random()
         if pick < noise_ratio:
             evt = _generate_noise_event(ctx, start_ts, end_ts)
+            evt = _clamp_event_time(evt, start_ts, end_ts)
             batch_events.append(evt)
             total_events += 1
             noise_events += 1
@@ -170,6 +183,7 @@ def generate_events_to_disk() -> None:
             chain_batch = _generate_attack_chain(ctx, start_ts, end_ts)
             chains_built += 1
             for evt in chain_batch:
+                evt = _clamp_event_time(evt, start_ts, end_ts)
                 batch_events.append(evt)
                 total_events += 1
                 chain_event_count += 1
@@ -177,6 +191,7 @@ def generate_events_to_disk() -> None:
                     break
         else:
             evt = _generate_single_event(ctx, start_ts, end_ts)
+            evt = _clamp_event_time(evt, start_ts, end_ts)
             batch_events.append(evt)
             total_events += 1
 
