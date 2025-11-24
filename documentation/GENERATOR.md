@@ -50,18 +50,10 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
   - Picks a playbook from `PLAYBOOKS`.
   - Returns a list of correlated events sharing users/assets/IPs and `attack.id`/`attack.stage`/`attack.sequence`.
 
-## Playbooks (`scripts/attack_chains/playbooks.py`)
-- Each playbook reuses `_shared_context` for consistency and calls `build_base_event` per step, adding rich artifacts:
-  - `powershell_dropper_chain`: Outlook → PowerShell dropper → recon → HTTPS PUT exfil.
-  - `ssh_lateral_chain`: SSH brute-force → successful SSH recon → tar staging.
-  - `ransomware_encryption_chain`: macro → shadow copy wipe → encryptor + ransom note.
-  - `sql_injection_exfil_chain`: SQLi POST → mysqldump → HTTPS exfil of compressed dump.
-  - `rdp_persistence_chain`: RDP logon → scheduled task persistence → internal MSTSC pivot.
-  - `vpn_phishing_chain`: Foreign VPN logon → hidden PowerShell execution → outbound credential exfil.
-  - `kerberos_golden_ticket_chain`: `mimikatz` credential theft → Kerberos ticket validation → `wmic` lateral move.
-  - `linux_crypto_miner_chain`: Curl pipe-to-bash installer → miner drop → outbound pool connections.
-  - `cloud_cli_abuse_chain`: AWS CLI credentials configured → inventory commands → `s3 sync` data theft.
-  - `smb_data_wiper_chain`: PsExec lateral move → event log clearing → `cipher.exe` destructive wipe.
+## Playbooks (`scripts/attack_chains/playbooks/`)
+- Each chain lives in its own module under the `playbooks` package and reuses shared helpers (`_shared_context`, `_append_and_maybe_stop`, `_rand_hash`, `_rand_domain`).
+- `PLAYBOOKS` in `playbooks/__init__.py` aggregates all scenarios for the generator to pick from.
+- Coverage spans cloud abuse, SaaS ATO, insider misuse, lateral movement variants, phishing/initial access, defense evasion, nuanced C2, staging/exfiltration, ransomware, and supply-chain/dev abuse. See `documentation/PLAYBOOKS.md` for a brief on each chain.
 
 ## Output
 - Files: `OUTPUT_PREFIX####.json` (NDJSON batches), each line an event.

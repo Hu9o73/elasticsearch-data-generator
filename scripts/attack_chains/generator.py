@@ -51,7 +51,7 @@ def _generate_attack_chain(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> L
 def _generate_noise_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Dict[str, Any]:
     """Emit a benign/false-positive alert so dashboards contain realistic noise."""
     ts = random.randint(start_ts, end_ts)
-    scenario = random.choice(["dns_update", "vuln_scanner", "normal_login"])
+    scenario = random.choice(["dns_update", "vuln_scanner", "normal_login", "approved_backup", "red_team_scan"])
 
     if scenario == "dns_update":
         overrides = {
@@ -71,12 +71,30 @@ def _generate_noise_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Di
             "outcome": "failure",
             "direction": "internal",
         }
-    else:
+    elif scenario == "normal_login":
         overrides = {
             "category": "benign_user_activity",
             "signature": "Known admin login",
             "severity": "1",
             "action": "allowed",
+            "outcome": "success",
+            "direction": "internal",
+        }
+    elif scenario == "approved_backup":
+        overrides = {
+            "category": "benign_file_copy",
+            "signature": "Approved data backup to cloud",
+            "severity": "1",
+            "action": "logged",
+            "outcome": "success",
+            "direction": "outbound",
+        }
+    else:
+        overrides = {
+            "category": "false_positive_scan",
+            "signature": "Red team exercise",
+            "severity": "2",
+            "action": "logged",
             "outcome": "success",
             "direction": "internal",
         }
@@ -93,8 +111,20 @@ def _generate_noise_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Di
     elif scenario == "vuln_scanner":
         event["fusionai"]["scan_type"] = "internal_compliance"
         event["fusionai"]["ports_scanned"] = random.randint(20, 200)
-    else:
+    elif scenario == "normal_login":
         event["logon"] = {"type": "network", "status": "success", "method": "kerberos"}
+    elif scenario == "approved_backup":
+        event["file"] = {
+            "path": "/srv/shares/finance_approved_backup.zip",
+            "extension": "zip",
+            "size": random.randint(10_000_000, 30_000_000),
+        }
+        event["url"] = {"full": "https://backup.vendor.com/upload"}
+        event["network"]["direction"] = "outbound"
+    else:
+        event["fusionai"]["scan_type"] = "red_team"
+        event["destination"]["ip"] = random.choice(ctx.get("dest_ips", ["10.0.3.10"]))
+        event["network"]["direction"] = "internal"
 
     return event
 
