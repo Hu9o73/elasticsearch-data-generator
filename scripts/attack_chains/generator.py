@@ -3,11 +3,12 @@ import os
 import random
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from .builder import build_base_event
 from .data_loader import load_context
+from .seasonal_noise import SeasonalNoiseModel
 from .playbooks import PLAYBOOKS
 
 
@@ -24,12 +25,15 @@ def _choose_time_window(days: int = 30) -> (int, int):
 def _clamp_event_time(event: Dict[str, Any], start_ts: int, end_ts: int) -> Dict[str, Any]:
     """Ensure event @timestamp stays within the chosen window."""
     try:
-        ts = int(datetime.fromisoformat(event["@timestamp"]).timestamp())
+        dt = datetime.fromisoformat(event["@timestamp"])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        ts = int(dt.timestamp())
     except (KeyError, ValueError, TypeError):
         return event
     clamped_ts = min(max(ts, start_ts), end_ts)
     if clamped_ts != ts:
-        event["@timestamp"] = datetime.fromtimestamp(clamped_ts).isoformat()
+        event["@timestamp"] = datetime.fromtimestamp(clamped_ts, timezone.utc).replace(tzinfo=None).isoformat()
     return event
 
 
@@ -60,10 +64,17 @@ def _generate_attack_chain(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> L
     return playbook(ctx, attack_id, chain_start)
 
 
-def _generate_noise_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Dict[str, Any]:
+def _generate_noise_event(
+    ctx: Dict[str, Any],
+    start_ts: int,
+    end_ts: int,
+    seasonal: SeasonalNoiseModel = None,
+) -> Dict[str, Any]:
     """Emit a benign/false-positive alert so dashboards contain realistic noise."""
-    ts = random.randint(start_ts, end_ts)
-    scenario = random.choice(["dns_update", "vuln_scanner", "normal_login", "approved_backup", "red_team_scan"])
+    ts = seasonal.pick_timestamp(start_ts, end_ts) if seasonal else random.randint(start_ts, end_ts)
+    scenario = seasonal.pick_scenario(ts) if seasonal else random.choice(
+        ["dns_update", "vuln_scanner", "normal_login", "approved_backup", "red_team_scan"]
+    )
 
     if scenario == "dns_update":
         overrides = {
@@ -158,6 +169,7 @@ def generate_events_to_disk() -> None:
     output_prefix = os.getenv("OUTPUT_PREFIX", "/home/debian/events_es_attack_chain_")
     chain_ratio = _clamp_ratio(float(os.getenv("ATTACK_CHAIN_RATIO", "0.15")))  # fraction in correlated chains
     noise_ratio = _clamp_ratio(float(os.getenv("NOISE_RATIO", "0.20")))  # fraction emitted as benign/noise alerts
+    seasonal_noise = SeasonalNoiseModel()
     if chain_ratio + noise_ratio > 0.95:
         scale = 0.95 / (chain_ratio + noise_ratio)
         chain_ratio *= scale
@@ -167,7 +179,7 @@ def generate_events_to_disk() -> None:
     start_ts, end_ts = _choose_time_window(days=30)
     print(
         f"[+] Attack-chain generator :: events={target_events}, "
-        f"chain_ratio={chain_ratio}, noise_ratio={noise_ratio}, window=30d"
+        f"chain_ratio={chain_ratio}, noise_ratio={noise_ratio}, window=30d, seasonal_noise={seasonal_noise.enabled}"
     )
 
     total_events = 0
@@ -182,7 +194,7 @@ def generate_events_to_disk() -> None:
         # Decide whether to create a chain or a single event
         pick = random.random()
         if pick < noise_ratio:
-            evt = _generate_noise_event(ctx, start_ts, end_ts)
+            evt = _generate_noise_event(ctx, start_ts, end_ts, seasonal_noise)
             evt = _clamp_event_time(evt, start_ts, end_ts)
             batch_events.append(evt)
             total_events += 1

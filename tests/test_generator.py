@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.attack_chains.builder import build_base_event  # noqa: E402
 from scripts.attack_chains.generator import _clamp_event_time, _clamp_ratio  # noqa: E402
+from scripts.attack_chains.seasonal_noise import SeasonalNoiseModel  # noqa: E402
 
 
 class GeneratorUnitTests(unittest.TestCase):
@@ -20,7 +21,7 @@ class GeneratorUnitTests(unittest.TestCase):
     def test_clamp_event_time(self):
         start_ts = 100
         end_ts = 200
-        evt = {"@timestamp": "1970-01-01T00:03:00"}
+        evt = {"@timestamp": "1970-01-01T00:10:00"}
         clamped = _clamp_event_time(evt, start_ts, end_ts)
         self.assertEqual(clamped["@timestamp"], "1970-01-01T00:03:20")
 
@@ -57,6 +58,24 @@ class GeneratorUnitTests(unittest.TestCase):
         self.assertEqual(evt["destination"]["ip"], "192.0.2.10")
         # Host still reflects the asset for the provided destination
         self.assertEqual(evt["host"]["ip"], ["10.0.4.9"])
+
+
+class SeasonalNoiseTests(unittest.TestCase):
+    def test_seasonal_timestamp_stays_in_window(self):
+        model = SeasonalNoiseModel(enabled=True, tz_offset_hours=0)
+        start_ts = 0
+        end_ts = 3600 * 24
+        ts = model.pick_timestamp(start_ts, end_ts)
+        self.assertGreaterEqual(ts, start_ts)
+        self.assertLessEqual(ts, end_ts)
+
+    def test_seasonal_scenario_selection_valid(self):
+        model = SeasonalNoiseModel(enabled=True, tz_offset_hours=0)
+        scenario = model.pick_scenario(0)
+        self.assertIn(
+            scenario,
+            ["dns_update", "vuln_scanner", "normal_login", "approved_backup", "red_team_scan"],
+        )
 
 
 if __name__ == "__main__":

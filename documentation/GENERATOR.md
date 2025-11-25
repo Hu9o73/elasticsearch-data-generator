@@ -4,6 +4,7 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
 
 ## Inputs & configuration
 - Environment: `scripts/.env` (or shell env) controls `DB_PATH`, `OUTPUT_PREFIX`, `TARGET_EVENTS`, `BATCH_SIZE`, `ATTACK_CHAIN_RATIO`, `NOISE_RATIO`, and fallbacks for CSVs.
+- Noise seasonality: optional `NOISE_SEASONALITY=true` biases benign events into office hours and maintenance windows (adjust with `NOISE_TZ_OFFSET` hours). Default is off for uniform noise timing.
 - Reproducibility: set `SEED` to seed Python’s RNG for deterministic draws.
 - Summary: override `SUMMARY_PATH` to control where the run summary JSON is written (default `<OUTPUT_PREFIX>_summary.json`).
 - Data sources:
