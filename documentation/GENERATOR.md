@@ -7,6 +7,7 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
 - Noise seasonality: optional `NOISE_SEASONALITY=true` biases benign events into office hours and maintenance windows (adjust with `NOISE_TZ_OFFSET` hours). Default is off for uniform noise timing.
 - Reproducibility: set `SEED` to seed Python’s RNG for deterministic draws.
 - Summary: override `SUMMARY_PATH` to control where the run summary JSON is written (default `<OUTPUT_PREFIX>_summary.json`).
+- Post-run resume: `python scripts/summarize_events.py` renders a console dashboard (chains/playbook mix, noise/seasonality, category and severity bars). Omit args to auto-discover files via `OUTPUT_PREFIX`, or pass files/dirs explicitly.
 - Data sources:
   - SQLite alerts DB (`DB_PATH` or `DB_PATH_FALLBACK`) for IPs, ports, signatures, categories, severities, and protocol distributions.
   - AD users CSV (`AD_USERS_FILE`, default `/home/debian/ad_users.csv`).
