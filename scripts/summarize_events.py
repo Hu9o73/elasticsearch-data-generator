@@ -166,13 +166,14 @@ def summarize(paths: List[Path]) -> Dict[str, object]:
 
 def _hourly_table(all_hours: Counter, noise_hours: Counter):
     max_all = max(all_hours.values()) if all_hours else 0
+    max_noise = max(noise_hours.values()) if noise_hours else 0
     print("Hour | All events (bar)                | Noise (bar)")
     print("-----+---------------------------------+----------------")
     for hour in range(24):
         all_val = all_hours.get(hour, 0)
         noise_val = noise_hours.get(hour, 0)
         bar_all = _bar(all_val, max_all)
-        bar_noise = _bar(noise_val, max_all)
+        bar_noise = _bar(noise_val, max_noise)
         print(f"{hour:02d}   | {bar_all:33s} {all_val:>6} | {bar_noise:16s} {noise_val:>6}")
 
 

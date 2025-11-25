@@ -4,7 +4,8 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
 
 ## Inputs & configuration
 - Environment: `scripts/.env` (or shell env) controls `DB_PATH`, `OUTPUT_PREFIX`, `TARGET_EVENTS`, `BATCH_SIZE`, `ATTACK_CHAIN_RATIO`, `NOISE_RATIO`, and fallbacks for CSVs.
-- Noise seasonality: optional `NOISE_SEASONALITY=true` biases benign events into office hours and maintenance windows (adjust with `NOISE_TZ_OFFSET` hours). Default is off for uniform noise timing.
+- Noise seasonality: optional `NOISE_SEASONALITY=true` biases benign events into office hours and maintenance windows (adjust with `NOISE_TZ_OFFSET` hours). Tune contrast via `NOISE_DAY_WEIGHT`, `NOISE_MAINT_WEIGHT`, `NOISE_WEEKEND_WEIGHT`, `NOISE_EARLY_WEIGHT`, `NOISE_DEFAULT_WEIGHT` and alert bias via `ALERT_NIGHT_WEIGHT`, `ALERT_EVENING_WEIGHT`, `ALERT_WEEKEND_WEIGHT`, `ALERT_DAY_WEIGHT`, `ALERT_DEFAULT_WEIGHT`.
+- Hourly overrides: set `NOISE_HOURLY_WEIGHTS` or `ALERT_HOURLY_WEIGHTS` to 24 comma-separated floats (0=00:00) to force exact per-hour weights; these override the day/night presets.
 - Reproducibility: set `SEED` to seed Python’s RNG for deterministic draws.
 - Summary: override `SUMMARY_PATH` to control where the run summary JSON is written (default `<OUTPUT_PREFIX>_summary.json`).
 - Post-run resume: `python scripts/summarize_events.py` renders a console dashboard (chains/playbook mix, noise/seasonality, category and severity bars). Omit args to auto-discover files via `OUTPUT_PREFIX`, or pass files/dirs explicitly.

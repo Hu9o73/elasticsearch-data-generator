@@ -9,19 +9,29 @@ import random
 import time
 import uuid
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from pathlib import Path
+from dotenv import load_dotenv, find_dotenv
 import sqlite3
 import csv
 import os
+import sys
+
+ROOT = Path(__file__).resolve().parent
+for candidate in (ROOT, ROOT.parent):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
 
 from attack_chains.playbooks import PLAYBOOKS
+from attack_chains.seasonal_noise import SeasonalNoiseModel
 
-load_dotenv()
+# Ensure we load the repo's scripts/.env even when invoked elsewhere
+_DEFAULT_ENV = Path(__file__).resolve().parent / ".env"
+load_dotenv(find_dotenv() or _DEFAULT_ENV)
 
-# Configuration
+# Configuration (fixed 500MB target to match original behavior)
 TARGET_SIZE_MB = 500
 TARGET_SIZE_BYTES = TARGET_SIZE_MB * 1024 * 1024
-BATCH_SIZE = 100000  # Events par batch
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "100000"))  # Events par batch
 OUTPUT_PREFIX = os.getenv("OUTPUT_PREFIX", "/home/debian/events_es_batch_")
 def clamp_ratio(value):
     return min(max(value, 0.0), 0.95)
@@ -164,6 +174,20 @@ end_time = datetime.now()
 start_time = end_time - timedelta(days=30)
 print(f"    ✓ Période: {start_time.date()} à {end_time.date()}")
 print()
+
+
+def _progress_bar(current: int, total: int, width: int = 40) -> str:
+    if total <= 0:
+        return "[" + "." * width + "]  0.0%"
+    pct = min(max(current / total, 0.0), 1.0)
+    filled = int(pct * width)
+    return f"[{'#' * filled}{'.' * (width - filled)}] {pct * 100:5.1f}%"
+
+
+def _render_progress(current_bytes: int, total_bytes: int, total_events: int):
+    bar = _progress_bar(current_bytes, total_bytes)
+    sys.stdout.write(f"\rProgress {bar} ({total_events:,} events)")
+    sys.stdout.flush()
 
 # Fonction de sélection pondérée
 def weighted_choice(choices_weights):
@@ -398,10 +422,10 @@ def generate_noise_event(timestamp):
     return event
 
 
-def generate_attack_chain(start_ts: int, end_ts: int):
+def generate_attack_chain(start_ts: int, end_ts: int, seasonal: SeasonalNoiseModel):
     """Construit une chaîne d'attaque corrélée via les playbooks existants."""
     attack_id = f"attack-{uuid.uuid4().hex[:10]}"
-    chain_start = random.randint(start_ts, end_ts)
+    chain_start = seasonal.pick_alert_timestamp(start_ts, end_ts) if seasonal else random.randint(start_ts, end_ts)
     playbook = random.choice(PLAYBOOKS)
     return playbook(chain_ctx, attack_id, chain_start)
 
@@ -418,24 +442,27 @@ chain_events_total = 0
 noise_events = 0
 batch_num = 1
 batch_events = []
+progress_last = 0
 
+seasonal_model = SeasonalNoiseModel()
 start_ts = int(start_time.timestamp())
 end_ts = int(end_time.timestamp())
 
 start_gen_time = time.time()
 
 try:
+    _render_progress(0, TARGET_SIZE_BYTES, 0)
     while total_bytes < TARGET_SIZE_BYTES:
         # Générer soit une chaîne, soit un événement unique, soit du bruit
         pick = random.random()
         if pick < NOISE_RATIO:
-            timestamp = random.randint(start_ts, end_ts)
+            timestamp = seasonal_model.pick_timestamp(start_ts, end_ts) if seasonal_model.enabled else random.randint(start_ts, end_ts)
             event = generate_noise_event(timestamp)
             batch_events.append(event)
             total_events += 1
             noise_events += 1
         elif pick < NOISE_RATIO + ATTACK_CHAIN_RATIO:
-            chain_events = generate_attack_chain(start_ts, end_ts)
+            chain_events = generate_attack_chain(start_ts, end_ts, seasonal_model if seasonal_model.enabled else None)
             chain_count += 1
             chain_events_total += len(chain_events)
             for evt in chain_events:
@@ -452,12 +479,17 @@ try:
                     rate = total_events / elapsed if elapsed > 0 else 0
                     print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size/1024/1024:.1f} MB")
                     print(f"               Total: {total_bytes/1024/1024:.1f} / {TARGET_SIZE_MB} MB ({total_events:,} events, {rate:.0f} events/s)")
+                    _render_progress(total_bytes, TARGET_SIZE_BYTES, total_events)
                     batch_events = []
                     batch_num += 1
                     if total_bytes >= TARGET_SIZE_BYTES:
                         break
         else:
-            timestamp = random.randint(start_ts, end_ts)
+            timestamp = (
+                seasonal_model.pick_alert_timestamp(start_ts, end_ts)
+                if seasonal_model.enabled
+                else random.randint(start_ts, end_ts)
+            )
             event = generate_event(timestamp)
             batch_events.append(event)
             total_events += 1
@@ -478,6 +510,7 @@ try:
 
             print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size/1024/1024:.1f} MB")
             print(f"               Total: {total_bytes/1024/1024:.1f} / {TARGET_SIZE_MB} MB ({total_events:,} events, {rate:.0f} events/s)")
+            _render_progress(total_bytes, TARGET_SIZE_BYTES, total_events)
 
             batch_events = []
             batch_num += 1
@@ -485,6 +518,9 @@ try:
             # Vérifier si on dépasse la cible
             if total_bytes >= TARGET_SIZE_BYTES:
                 break
+        elif total_events - progress_last >= 5000:
+            progress_last = total_events
+            _render_progress(total_bytes, TARGET_SIZE_BYTES, total_events)
 
     # Sauvegarder le dernier batch si nécessaire
     if batch_events and total_bytes < TARGET_SIZE_BYTES:
@@ -497,6 +533,7 @@ try:
         total_bytes += batch_size
 
         print(f"    Batch {batch_num:04d}: {len(batch_events):,} événements, {batch_size/1024/1024:.1f} MB (Final)")
+        _render_progress(total_bytes, TARGET_SIZE_BYTES, total_events)
 
 except Exception as e:
     print(f"\n[!] Erreur: {e}")
@@ -508,6 +545,7 @@ finally:
 
 total_time = time.time() - start_gen_time
 
+sys.stdout.write("\n")
 print()
 print("="*80)
 print("✅ GÉNÉRATION TERMINÉE")

@@ -4,12 +4,19 @@ import random
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List
+
+from dotenv import load_dotenv, find_dotenv
 
 from .builder import build_base_event
 from .data_loader import load_context
 from .seasonal_noise import SeasonalNoiseModel
 from .playbooks import PLAYBOOKS
+
+# Ensure we load the repo's scripts/.env even if invoked from elsewhere
+_DEFAULT_ENV = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(find_dotenv() or _DEFAULT_ENV)
 
 
 def _clamp_ratio(value: float) -> float:
@@ -37,8 +44,13 @@ def _clamp_event_time(event: Dict[str, Any], start_ts: int, end_ts: int) -> Dict
     return event
 
 
-def _generate_single_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> Dict[str, Any]:
-    ts = random.randint(start_ts, end_ts)
+def _generate_single_event(
+    ctx: Dict[str, Any],
+    start_ts: int,
+    end_ts: int,
+    seasonal: SeasonalNoiseModel = None,
+) -> Dict[str, Any]:
+    ts = seasonal.pick_alert_timestamp(start_ts, end_ts) if seasonal else random.randint(start_ts, end_ts)
     event = build_base_event(ts, ctx)
 
     # Light category-specific enrichment to keep variety
@@ -57,9 +69,14 @@ def _generate_single_event(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> D
     return event
 
 
-def _generate_attack_chain(ctx: Dict[str, Any], start_ts: int, end_ts: int) -> List[Dict[str, Any]]:
+def _generate_attack_chain(
+    ctx: Dict[str, Any],
+    start_ts: int,
+    end_ts: int,
+    seasonal: SeasonalNoiseModel = None,
+) -> List[Dict[str, Any]]:
     attack_id = f"attack-{uuid.uuid4().hex[:10]}"
-    chain_start = random.randint(start_ts, end_ts)
+    chain_start = seasonal.pick_alert_timestamp(start_ts, end_ts) if seasonal else random.randint(start_ts, end_ts)
     playbook = random.choice(PLAYBOOKS)
     return playbook(ctx, attack_id, chain_start)
 
@@ -169,7 +186,7 @@ def generate_events_to_disk() -> None:
     output_prefix = os.getenv("OUTPUT_PREFIX", "/home/debian/events_es_attack_chain_")
     chain_ratio = _clamp_ratio(float(os.getenv("ATTACK_CHAIN_RATIO", "0.15")))  # fraction in correlated chains
     noise_ratio = _clamp_ratio(float(os.getenv("NOISE_RATIO", "0.20")))  # fraction emitted as benign/noise alerts
-    seasonal_noise = SeasonalNoiseModel()
+    seasonal_model = SeasonalNoiseModel()
     if chain_ratio + noise_ratio > 0.95:
         scale = 0.95 / (chain_ratio + noise_ratio)
         chain_ratio *= scale
@@ -179,7 +196,8 @@ def generate_events_to_disk() -> None:
     start_ts, end_ts = _choose_time_window(days=30)
     print(
         f"[+] Attack-chain generator :: events={target_events}, "
-        f"chain_ratio={chain_ratio}, noise_ratio={noise_ratio}, window=30d, seasonal_noise={seasonal_noise.enabled}"
+        f"chain_ratio={chain_ratio}, noise_ratio={noise_ratio}, window=30d, "
+        f"seasonality_enabled={seasonal_model.enabled}"
     )
 
     total_events = 0
@@ -194,13 +212,13 @@ def generate_events_to_disk() -> None:
         # Decide whether to create a chain or a single event
         pick = random.random()
         if pick < noise_ratio:
-            evt = _generate_noise_event(ctx, start_ts, end_ts, seasonal_noise)
+            evt = _generate_noise_event(ctx, start_ts, end_ts, seasonal_model)
             evt = _clamp_event_time(evt, start_ts, end_ts)
             batch_events.append(evt)
             total_events += 1
             noise_events += 1
         elif pick < noise_ratio + chain_ratio:
-            chain_batch = _generate_attack_chain(ctx, start_ts, end_ts)
+            chain_batch = _generate_attack_chain(ctx, start_ts, end_ts, seasonal_model)
             chains_built += 1
             for evt in chain_batch:
                 evt = _clamp_event_time(evt, start_ts, end_ts)
@@ -210,7 +228,7 @@ def generate_events_to_disk() -> None:
                 if total_events >= target_events:
                     break
         else:
-            evt = _generate_single_event(ctx, start_ts, end_ts)
+            evt = _generate_single_event(ctx, start_ts, end_ts, seasonal_model)
             evt = _clamp_event_time(evt, start_ts, end_ts)
             batch_events.append(evt)
             total_events += 1
