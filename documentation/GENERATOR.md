@@ -26,6 +26,7 @@ How the attack-chain generator produces NDJSON files, where the data comes from,
   - Event metadata: severity (text + numeric in `fusionai.severity`), action/outcome, module/dataset.
   - Network: source/destination IPs/ports/bytes, protocol, direction.
   - User/host: AD user fields, asset fields, OS/platform, risk level.
+  - Platform-specific realism: Windows assets get Sysmon-style `winlog` + `event.code` (IDs like 1/3/11/13/22) while Linux assets include auditd/syslog-like `auditd` + `log` blocks to match common SIEM intake formats.
   - Threat: MITRE tactic/technique mapped from category.
   - Rule/fusionai: signature/category IDs plus asset owner/location.
   - Tags/labels: basic env/source tagging.

@@ -1,4 +1,5 @@
 import random
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -88,6 +89,184 @@ def _resolve_asset(dst_ip: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     return random.choice(ctx["assets"]) if ctx.get("assets") else {}
 
 
+def _derive_platform(asset: Dict[str, Any]) -> str:
+    os_name = (asset.get("OS") or asset.get("os") or "").lower()
+    if any(k in os_name for k in ["linux", "ubuntu", "debian", "centos", "rhel"]):
+        return "linux"
+    if "windows" in os_name:
+        return "windows"
+    if any(k in os_name for k in ["mac", "darwin"]):
+        return "macos"
+    return "windows"
+
+
+def _rand_domain_label(length: int = 10) -> str:
+    return "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=length))
+
+
+def _sysmon_event_kind(category: str) -> str:
+    cat = category.lower()
+    if "dns" in cat or "dga" in cat:
+        return "dns"
+    if any(k in cat for k in ["file", "backup", "staging", "exfil", "ransom", "wiper", "encrypt"]):
+        return "file"
+    if any(k in cat for k in ["registry", "gpo", "amsi", "edr", "sysmon", "timestomp", "persistence"]):
+        return "registry"
+    if any(k in cat for k in ["lateral", "c2", "beacon", "ssh", "rdp", "psexec", "wmi", "curl", "http", "tunnel", "fronting"]):
+        return "network"
+    return "process"
+
+
+def _apply_sysmon_enrichment(event: Dict[str, Any], category: str) -> None:
+    """Attach Sysmon-like metadata so Windows events look like real EDR telemetry."""
+    kind = _sysmon_event_kind(category)
+    if kind == "dns":
+        event_code = 22
+    elif kind == "file":
+        event_code = 11
+    elif kind == "registry":
+        event_code = 13
+    elif kind == "network":
+        event_code = 3
+    else:
+        event_code = 1
+
+    process = event.get("process", {})
+    exe = process.get("executable") or process.get("name") or "C:\\Windows\\System32\\svchost.exe"
+    cmdline = process.get("command_line") or exe
+    domain = event.get("user", {}).get("domain", "")
+    username = event.get("user", {}).get("name", "unknown")
+    domain_user = f"{domain}\\{username}" if domain else username
+    ts = event.get("@timestamp", datetime.utcnow().isoformat())
+    guid = "{" + uuid.uuid4().hex + "}"
+    parent_guid = "{" + uuid.uuid4().hex + "}"
+    pid = random.randint(400, 20000)
+    parent_pid = random.randint(200, 6000)
+
+    if kind == "dns":
+        dns_name = event.get("dns", {}).get("question", {}).get("name") or f"{_rand_domain_label(random.randint(6, 10))}.{random.choice(['com', 'net', 'org'])}"
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "Image": exe,
+            "QueryName": dns_name,
+            "QueryStatus": "0",
+            "QueryResults": event.get("destination", {}).get("ip", "0.0.0.0"),
+            "User": domain_user,
+        }
+    elif kind == "file":
+        target = event.get("file", {}).get("path") or f"C:\\Users\\Public\\{_rand_domain_label(8)}.dat"
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "Image": exe,
+            "TargetFilename": target,
+            "CreationUtcTime": f"{ts}Z",
+            "User": domain_user,
+            "ProcessGuid": guid,
+            "ProcessId": pid,
+        }
+    elif kind == "registry":
+        target_obj = event.get("registry", {}).get("path") or "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\Updater"
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "Image": exe,
+            "TargetObject": target_obj,
+            "EventType": random.choice(["SetValue", "CreateKey"]),
+            "Details": "DWORD (0x00000000)",
+            "User": domain_user,
+            "ProcessGuid": guid,
+            "ProcessId": pid,
+        }
+    elif kind == "network":
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "Image": exe,
+            "User": domain_user,
+            "Protocol": event.get("network", {}).get("protocol", "tcp").upper(),
+            "SourceIp": event.get("source", {}).get("ip"),
+            "SourcePort": event.get("source", {}).get("port"),
+            "DestinationIp": event.get("destination", {}).get("ip"),
+            "DestinationPort": event.get("destination", {}).get("port"),
+            "Initiated": "true" if event.get("network", {}).get("direction") != "inbound" else "false",
+            "ProcessGuid": guid,
+            "ProcessId": pid,
+        }
+    else:  # process creation baseline
+        parent_image = process.get("parent_executable") or "C:\\Windows\\System32\\services.exe"
+        parent_cmd = process.get("parent_command_line") or parent_image
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "Image": exe,
+            "CommandLine": cmdline,
+            "ParentImage": parent_image,
+            "ParentCommandLine": parent_cmd,
+            "ProcessGuid": guid,
+            "ProcessId": pid,
+            "ParentProcessGuid": parent_guid,
+            "ParentProcessId": parent_pid,
+            "User": domain_user,
+        }
+
+    event["event"]["code"] = str(event_code)
+    event["event"]["provider"] = "Microsoft-Windows-Sysmon"
+    event["winlog"] = {
+        "channel": "Microsoft-Windows-Sysmon/Operational",
+        "provider_name": "Microsoft-Windows-Sysmon",
+        "computer_name": event.get("host", {}).get("hostname"),
+        "event_id": event_code,
+        "record_id": random.randint(10_000, 2_000_000),
+        "opcode": "Info",
+        "process": {"pid": pid, "thread_id": random.randint(1000, 5000)},
+        "event_data": event_data,
+    }
+
+
+def _apply_linux_audit_enrichment(event: Dict[str, Any], category: str) -> None:
+    """Attach auditd/syslog-like metadata for Linux assets."""
+    # Pick a plausible process/exe for the category so alerts feel grounded.
+    cat = category.lower()
+    if any(k in cat for k in ["ssh", "lateral"]):
+        exe = "/usr/sbin/sshd"
+        audit_type = "USER_LOGIN"
+    elif "dns" in cat:
+        exe = "/usr/bin/dig"
+        audit_type = "USER_CMD"
+    elif any(k in cat for k in ["sudo", "privilege", "persistence"]):
+        exe = "/usr/bin/sudo"
+        audit_type = "CRED_ACQ"
+    elif any(k in cat for k in ["file", "exfil", "ransom", "backup"]):
+        exe = "/usr/bin/curl"
+        audit_type = "SYSCALL"
+    else:
+        exe = "/usr/bin/python3"
+        audit_type = "USER_CMD"
+
+    pid = random.randint(300, 20000)
+    tty = f"pts/{random.randint(0, 6)}"
+    username = event.get("user", {}).get("name", "unknown")
+    outcome = event.get("event", {}).get("outcome")
+    success = "yes" if outcome == "success" else "no"
+    cmd = event.get("process", {}).get("command_line") or exe
+
+    event["event"]["code"] = audit_type
+    event["event"]["provider"] = "auditd"
+    event["auditd"] = {
+        "type": audit_type,
+        "pid": pid,
+        "uid": username,
+        "auid": username,
+        "tty": tty,
+        "exe": exe,
+        "msg": f"cwd=\"/home/{username}\" cmd=\"{cmd}\"",
+        "success": success,
+        "addr": event.get("source", {}).get("ip"),
+    }
+    event["log"] = {
+        "level": "info" if success == "yes" else "warning",
+        "file": {"path": "/var/log/audit/audit.log"},
+        "syslog": {"facility": "auth", "severity": "notice"},
+    }
+
+
 def build_base_event(
     timestamp: int,
     ctx: Dict[str, Any],
@@ -116,6 +295,7 @@ def build_base_event(
     dst_ip = override_dst_ip or _choose_ip(ctx.get("dest_ips", []), "10.0.1.10")
 
     asset = overrides.get("asset") or _resolve_asset(dst_ip, ctx)
+    platform = _derive_platform(asset)
     # If we picked an unmapped asset and the caller did not force a dst_ip, align destination with the asset IP
     if not override_dst_ip and not overrides.get("asset") and asset.get("IP_Address"):
         dst_ip = asset["IP_Address"]
@@ -160,10 +340,7 @@ def build_base_event(
             "type": asset.get("Asset_Type", "Unknown"),
             "ip": [asset.get("IP_Address", dst_ip)],
             "mac": [asset.get("MAC_Address", "")] if asset.get("MAC_Address") else [],
-            "os": {
-                "name": asset.get("OS", "Unknown"),
-                "platform": "linux" if "Linux" in asset.get("OS", "") or "Ubuntu" in asset.get("OS", "") else "windows",
-            },
+            "os": {"name": asset.get("OS", "Unknown"), "platform": platform},
             "risk": {"static_level": asset.get("Criticality", "Medium").lower()},
         },
         "threat": {
@@ -192,5 +369,10 @@ def build_base_event(
     # Optional correlation metadata
     if overrides.get("attack"):
         event["attack"] = overrides["attack"]
+
+    if platform == "windows":
+        _apply_sysmon_enrichment(event, category)
+    elif platform == "linux":
+        _apply_linux_audit_enrichment(event, category)
 
     return event
