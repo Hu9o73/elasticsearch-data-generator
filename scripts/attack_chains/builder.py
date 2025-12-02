@@ -91,13 +91,14 @@ def _resolve_asset(dst_ip: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 def _derive_platform(asset: Dict[str, Any]) -> str:
     os_name = (asset.get("OS") or asset.get("os") or "").lower()
-    if any(k in os_name for k in ["linux", "ubuntu", "debian", "centos", "rhel"]):
+    linux_markers = ["linux", "ubuntu", "debian", "centos", "rhel", "red hat", "fedora", "suse", "oracle", "amazon linux", "rocky", "almalinux"]
+    if any(k in os_name for k in linux_markers):
         return "linux"
-    if "windows" in os_name:
+    if "win" in os_name or "microsoft" in os_name:
         return "windows"
     if any(k in os_name for k in ["mac", "darwin"]):
         return "macos"
-    return "windows"
+    return "linux"
 
 
 def _rand_domain_label(length: int = 10) -> str:
@@ -106,11 +107,17 @@ def _rand_domain_label(length: int = 10) -> str:
 
 def _sysmon_event_kind(category: str) -> str:
     cat = category.lower()
+    if any(k in cat for k in ["credential", "kerberoast", "golden", "lsass", "ssh_agent", "secret", "github_pat"]):
+        return "process_access"  # Sysmon 10
+    if any(k in cat for k in ["tamper", "sysmon_disable", "signed_driver", "driver", "gpo", "edr"]):
+        return "process_tamper"  # Sysmon 25
     if "dns" in cat or "dga" in cat:
         return "dns"
+    if any(k in cat for k in ["dll", "driver", "signed_driver"]):
+        return "image_load"  # Sysmon 7
     if any(k in cat for k in ["file", "backup", "staging", "exfil", "ransom", "wiper", "encrypt"]):
         return "file"
-    if any(k in cat for k in ["registry", "gpo", "amsi", "edr", "sysmon", "timestomp", "persistence"]):
+    if any(k in cat for k in ["registry", "gpo", "amsi", "sysmon", "timestomp", "persistence"]):
         return "registry"
     if any(k in cat for k in ["lateral", "c2", "beacon", "ssh", "rdp", "psexec", "wmi", "curl", "http", "tunnel", "fronting"]):
         return "network"
@@ -120,28 +127,35 @@ def _sysmon_event_kind(category: str) -> str:
 def _apply_sysmon_enrichment(event: Dict[str, Any], category: str) -> None:
     """Attach Sysmon-like metadata so Windows events look like real EDR telemetry."""
     kind = _sysmon_event_kind(category)
-    if kind == "dns":
-        event_code = 22
-    elif kind == "file":
-        event_code = 11
-    elif kind == "registry":
-        event_code = 13
-    elif kind == "network":
-        event_code = 3
-    else:
-        event_code = 1
+    event_code = {
+        "dns": 22,
+        "file": 11,
+        "registry": 13,
+        "network": 3,
+        "image_load": 7,
+        "process_access": 10,
+        "process_tamper": 25,
+        "process": 1,
+    }.get(kind, 1)
 
     process = event.get("process", {})
+    attack = event.get("attack", {})
+    attack_id = attack.get("id", "")
+    seq = attack.get("sequence", 0)
+    rng = random.Random(f"{attack_id}-{seq}") if attack_id else random
     exe = process.get("executable") or process.get("name") or "C:\\Windows\\System32\\svchost.exe"
     cmdline = process.get("command_line") or exe
     domain = event.get("user", {}).get("domain", "")
     username = event.get("user", {}).get("name", "unknown")
     domain_user = f"{domain}\\{username}" if domain else username
     ts = event.get("@timestamp", datetime.utcnow().isoformat())
-    guid = "{" + uuid.uuid4().hex + "}"
-    parent_guid = "{" + uuid.uuid4().hex + "}"
-    pid = random.randint(400, 20000)
-    parent_pid = random.randint(200, 6000)
+    guid = "{" + "".join(rng.choices("0123456789abcdef", k=32)) + "}"
+    parent_guid = "{" + "".join(rng.choices("0123456789abcdef", k=32)) + "}"
+    pid = rng.randint(400, 20000)
+    parent_pid = max(100, pid - rng.randint(50, 900))
+    event.setdefault("process", {})
+    event["process"].setdefault("pid", pid)
+    event["process"].setdefault("parent", {"pid": parent_pid})
 
     if kind == "dns":
         dns_name = event.get("dns", {}).get("question", {}).get("name") or f"{_rand_domain_label(random.randint(6, 10))}.{random.choice(['com', 'net', 'org'])}"
@@ -152,6 +166,46 @@ def _apply_sysmon_enrichment(event: Dict[str, Any], category: str) -> None:
             "QueryStatus": "0",
             "QueryResults": event.get("destination", {}).get("ip", "0.0.0.0"),
             "User": domain_user,
+        }
+    elif kind == "image_load":
+        target = event.get("file", {}).get("path") or f"C:\\Windows\\System32\\{_rand_domain_label(6)}.dll"
+        hash_hex = "".join(rng.choices("0123456789abcdef", k=64))
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "Image": exe,
+            "ImageLoaded": target,
+            "Hashes": f"SHA256={hash_hex}",
+            "Signed": rng.choice(["true", "false"]),
+            "SignatureStatus": rng.choice(["Valid", "Invalid", "Unavailable"]),
+            "ProcessGuid": guid,
+            "ProcessId": pid,
+        }
+    elif kind == "process_access":
+        target_img = process.get("target_image") or "C:\\Windows\\System32\\lsass.exe"
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "SourceImage": exe,
+            "TargetImage": target_img,
+            "GrantedAccess": hex(rng.randint(0x1000, 0x3010)),
+            "CallTrace": "C:\\Windows\\SYSTEM32\\ntdll.dll+0x9e300",
+            "SourceProcessGUID": guid,
+            "SourceProcessId": pid,
+            "TargetProcessGUID": "{" + "".join(rng.choices("0123456789abcdef", k=32)) + "}",
+            "TargetProcessId": rng.randint(400, 8000),
+            "User": domain_user,
+        }
+    elif kind == "process_tamper":
+        target_img = process.get("target_image") or exe
+        event_data = {
+            "UtcTime": f"{ts}Z",
+            "Image": exe,
+            "TargetImage": target_img,
+            "TargetProcessId": rng.randint(300, 8000),
+            "Status": "0x0",
+            "CallTrace": "C:\\Windows\\System32\\ntdll.dll+0x2e4a0",
+            "User": domain_user,
+            "ProcessGuid": guid,
+            "ProcessId": pid,
         }
     elif kind == "file":
         target = event.get("file", {}).get("path") or f"C:\\Users\\Public\\{_rand_domain_label(8)}.dat"

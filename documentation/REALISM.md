@@ -8,6 +8,10 @@ This generator is built to mirror how security teams see data in a SIEM/EDR pipe
 - Seasonality and noise: Optional seasonality biases benign events into business hours/maintenance windows; noise events (vuln scans, backups, admin logons) keep baselines realistic.
 - OS-native telemetry: Windows hosts carry Sysmon-style fields (`winlog`, `event.code`, event IDs like 1/3/11/13/22); Linux hosts use auditd/syslog-style blocks (`auditd`, `log`). Category heuristics pick plausible processes (e.g., sshd for SSH lateral, sudo for privilege actions).
 - Deepen variety: Powershell categories get encoded `-enc` commands, DGA categories get random DNS lookups, exfil chains include file/url detail, and randomness can be seeded (`SEED`) for reproducibility.
+- Platform fidelity: `host.os.platform` is inferred from the OS string (RHEL/Ubuntu/etc -> linux; Windows -> windows) and drives which enrichment is applied, so Sysmon never shows up on Linux and auditd never shows up on Windows.
+- Broader Sysmon coverage: defense-evasion/credential-access categories can emit Sysmon IDs 7 (ImageLoad), 10 (ProcessAccess), 25 (ProcessTamper) in addition to 1/3/11/13/22, with stable parent/child PIDs/GUIDs seeded by the chain to keep relationships coherent.
+- Timeline realism: Correlated playbooks are retimed with stage-aware jitter (seconds for initial access/execution, minutes for lateral movement, hours for collection/exfil/impact) so sequences form believable timelines instead of flat timestamps.
+- Seasonality tweaks: Noise scenarios peak in office hours for logons/scans and in maintenance windows for backups/scans; weekends bias toward backups/DNS with fewer logons.
 
 # How to read the generated logs
 - Schema backbone: Alerts follow an ECS-like shape (`event`, `source`, `destination`, `network`, `user`, `host`, `threat`, `rule`, `tags`, `labels`) so downstream SIEM/ES parsers work without custom mappings.

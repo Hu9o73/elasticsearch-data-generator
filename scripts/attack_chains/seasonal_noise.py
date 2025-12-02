@@ -210,34 +210,34 @@ class SeasonalNoiseModel:
 
         if (weekday == 6 and hour >= 20) or (weekday == 0 and hour <= 2):
             bucket = {
-                "approved_backup": 4,
-                "dns_update": 2,
-                "vuln_scanner": 1,
+                "approved_backup": 8,
+                "dns_update": 3,
+                "vuln_scanner": 3,
                 "normal_login": 1,
             }
         elif weekday < 5 and 8 <= hour <= 18:
             bucket = {
-                "normal_login": 4,
-                "vuln_scanner": 3,
-                "dns_update": 2,
+                "normal_login": 6,
+                "vuln_scanner": 4,
+                "dns_update": 3,
                 "approved_backup": 1,
                 "red_team_scan": 1,
             }
         elif weekday >= 5:
             bucket = {
-                "approved_backup": 2,
-                "dns_update": 2,
+                "approved_backup": 4,
+                "dns_update": 3,
                 "red_team_scan": 2,
-                "vuln_scanner": 1,
+                "vuln_scanner": 2,
                 "normal_login": 1,
             }
         else:
             bucket = {
-                "approved_backup": 2,
-                "dns_update": 1,
+                "approved_backup": 3,
+                "dns_update": 2,
                 "red_team_scan": 2,
                 "normal_login": 2,
-                "vuln_scanner": 1,
+                "vuln_scanner": 2,
             }
 
         scenarios = list(bucket.keys())

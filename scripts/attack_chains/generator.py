@@ -44,6 +44,42 @@ def _clamp_event_time(event: Dict[str, Any], start_ts: int, end_ts: int) -> Dict
     return event
 
 
+_STAGE_DELAY_RANGES = {
+    "initial_access": (5, 90),
+    "execution": (5, 120),
+    "defense_evasion": (60, 600),
+    "credential_access": (90, 900),
+    "persistence": (120, 1200),
+    "discovery": (120, 900),
+    "lateral_movement": (240, 2400),
+    "collection": (600, 3600),
+    "command_and_control": (120, 900),
+    "exfiltration": (900, 7200),
+    "impact": (900, 10800),
+}
+_DEFAULT_STAGE_DELAY = (60, 600)
+
+
+def _retime_chain_events(events: List[Dict[str, Any]], chain_start: int) -> List[Dict[str, Any]]:
+    """Apply stage-aware jitter so chain timelines look believable."""
+    if not events:
+        return events
+    ordered_idx = sorted(
+        range(len(events)),
+        key=lambda idx: events[idx].get("attack", {}).get("sequence", idx),
+    )
+    current_ts = chain_start
+    for i, idx in enumerate(ordered_idx):
+        evt = events[idx]
+        stage = evt.get("attack", {}).get("stage", "")
+        stage_key = stage.lower() if isinstance(stage, str) else ""
+        min_d, max_d = _STAGE_DELAY_RANGES.get(stage_key, _DEFAULT_STAGE_DELAY)
+        delta = 0 if i == 0 else random.randint(min_d, max_d)
+        current_ts += delta
+        evt["@timestamp"] = datetime.fromtimestamp(current_ts).isoformat()
+    return events
+
+
 def _generate_single_event(
     ctx: Dict[str, Any],
     start_ts: int,
@@ -78,7 +114,8 @@ def _generate_attack_chain(
     attack_id = f"attack-{uuid.uuid4().hex[:10]}"
     chain_start = seasonal.pick_alert_timestamp(start_ts, end_ts) if seasonal else random.randint(start_ts, end_ts)
     playbook = random.choice(PLAYBOOKS)
-    return playbook(ctx, attack_id, chain_start)
+    chain_events = playbook(ctx, attack_id, chain_start)
+    return _retime_chain_events(chain_events, chain_start)
 
 
 def _generate_noise_event(
