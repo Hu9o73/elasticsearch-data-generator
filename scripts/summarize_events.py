@@ -13,6 +13,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_USE_COLOR = os.getenv("NO_COLOR", "").lower() not in {"1", "true", "yes"} and os.getenv("FORCE_COLOR", "").lower() in {"1", "true", "yes"} or os.getenv("TERM") not in {None, "", "dumb"}
+
+_COLORS = {
+    "title": "96",  # bright cyan
+    "label": "94",  # bright blue
+    "value": "93",  # bright yellow
+    "bar": "92",  # bright green
+    "noise": "95",  # bright magenta
+    "dim": "90",
+}
+
+
+def _color(text: str, role: str) -> str:
+    if not _USE_COLOR:
+        return text
+    code = _COLORS.get(role)
+    return f"\033[{code}m{text}\033[0m" if code else text
+
 
 # --------- IO helpers ----------
 def _iter_event_files(paths: List[Path]) -> Iterable[Path]:
@@ -38,11 +56,12 @@ def _bar(value: int, max_value: int, width: int = 32) -> str:
         return ""
     fill = int((value / max_value) * width)
     fill = min(width, fill)
-    return "#" * fill + "." * (width - fill)
+    bar = "#" * fill + "." * (width - fill)
+    return _color(bar, "bar")
 
 
 def _print_section(title: str):
-    print("\n" + title)
+    print("\n" + _color(title, "title"))
     print("-" * len(title))
 
 
@@ -202,30 +221,44 @@ def main():
     metrics = summarize(targets)
     total_events = metrics["total_events"]
 
-    print("=" * 72)
-    print("FUSIONAI ALERT DATA RESUME")
-    print("=" * 72)
-    print(f"Files processed : {metrics['files_processed']}")
-    print(f"Total events    : {total_events:,}")
-    print(f"Time range      : {metrics['time_range']['earliest']} -> {metrics['time_range']['latest']}")
-    print(f"Unique users    : {metrics['unique_users']:,}")
-    print(f"Unique hosts    : {metrics['unique_hosts']:,}")
+    print(_color("=" * 72, "dim"))
+    print(_color("FUSIONAI ALERT DATA RESUME", "title"))
+    print(_color("=" * 72, "dim"))
+    print(f"Files processed : {_color(str(metrics['files_processed']), 'value')}")
+    print(f"Total events    : {_color(format(total_events, ','), 'value')}")
+    print(
+        f"Time range      : {_color(str(metrics['time_range']['earliest']), 'value')} -> "
+        f"{_color(str(metrics['time_range']['latest']), 'value')}"
+    )
+    print(f"Unique users    : {_color(format(metrics['unique_users'], ','), 'value')}")
+    print(f"Unique hosts    : {_color(format(metrics['unique_hosts'], ','), 'value')}")
 
     _print_section("Chain coverage (playbooks)")
     chains = metrics["chains"]
-    print(f"Attack chains   : {chains['count']:,} (events: {chains['events_in_chains']:,})")
-    print(f"Chain len       : min {chains['min_len']} / avg {chains['avg_len']} / max {chains['max_len']}")
+    print(
+        f"Attack chains   : {_color(format(chains['count'], ','), 'value')} "
+        f"(events: {_color(format(chains['events_in_chains'], ','), 'value')})"
+    )
+    print(
+        "Chain len       : min "
+        f"{_color(str(chains['min_len']), 'value')} / avg {_color(str(chains['avg_len']), 'value')} / "
+        f"max {_color(str(chains['max_len']), 'value')}"
+    )
     if metrics["chain_category"]:
         top = metrics["chain_category"].most_common(8)
         max_val = top[0][1]
         for name, val in top:
             bar = _bar(val, max_val)
             pct = _fmt_pct(val, chains["count"])
-            print(f"{name:<24} {bar} {val:>7} ({pct})")
+            print(f"{_color(f'{name:<24}', 'label')} {bar} {_color(format(val, '>7'), 'value')} ({_color(pct, 'value')})")
 
     _print_section("Noise & seasonality")
     noise = metrics["noise"]
-    print(f"Noise events    : {noise['total']:,} ({noise['ratio']:.1f}% of total)")
+    noise_ratio_str = f"{noise['ratio']:.1f}%"
+    print(
+        f"Noise events    : {_color(format(noise['total'], ','), 'value')} "
+        f"({_color(noise_ratio_str, 'noise')} of total)"
+    )
     _hourly_table(metrics["events_by_hour"], noise["by_hour"])
 
     _print_section("Top categories")

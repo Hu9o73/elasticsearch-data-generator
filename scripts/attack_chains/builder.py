@@ -105,6 +105,27 @@ def _rand_domain_label(length: int = 10) -> str:
     return "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=length))
 
 
+def _normalize_protocol(proto: Any) -> Tuple[str, List[str]]:
+    """Return canonical protocol plus a list for multi-valued sources."""
+    if proto is None:
+        return "tcp", ["tcp"]
+    if isinstance(proto, str):
+        raw = proto.strip().lower()
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = [p.strip().strip("\"'") for p in raw.strip("[]").split(",") if p.strip()]
+                if parsed:
+                    return parsed[0], parsed
+            except Exception:
+                pass
+        return raw, [raw]
+    if isinstance(proto, (list, tuple)) and proto:
+        canon = str(proto[0]).lower()
+        return canon, [str(p).lower() for p in proto]
+    raw = str(proto).lower()
+    return raw, [raw]
+
+
 def _sysmon_event_kind(category: str) -> str:
     cat = category.lower()
     if any(k in cat for k in ["credential", "kerberoast", "golden", "lsass", "ssh_agent", "secret", "github_pat"]):
@@ -357,7 +378,8 @@ def build_base_event(
 
     src_port = overrides.get("src_port") or (random.choice(ctx.get("real_src_ports", [])) if ctx.get("real_src_ports") else random.randint(49152, 65535))
     dest_port = overrides.get("dest_port") or (random.choice(ctx.get("real_dest_ports", [])) if ctx.get("real_dest_ports") else random.choice([80, 443, 445, 3389, 22]))
-    protocol = overrides.get("protocol") or (random.choice(ctx.get("real_protocols", [])) if ctx.get("real_protocols") else "TCP")
+    raw_proto = overrides.get("protocol") or (random.choice(ctx.get("real_protocols", [])) if ctx.get("real_protocols") else "tcp")
+    protocol, protocol_list = _normalize_protocol(raw_proto)
 
     severity_text = _severity_text(severity)
     mitre_technique, mitre_tactic = _mitre_for_category(category)
@@ -377,7 +399,8 @@ def build_base_event(
         "source": {"ip": src_ip, "port": src_port, "bytes": random.randint(100, 50000)},
         "destination": {"ip": dst_ip, "port": dest_port, "bytes": random.randint(500, 100000)},
         "network": {
-            "protocol": protocol.lower() if protocol else "tcp",
+            "protocol": protocol,
+            "protocols": protocol_list,
             "bytes": random.randint(600, 150000),
             "direction": overrides.get("direction") or random.choice(["inbound", "outbound", "internal"]),
         },
